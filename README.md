@@ -1,26 +1,26 @@
 # TensorRT-LightNet: High-Efficiency and Real-Time CNN Implementation on Edge AI
 
-trt-lightNet is a CNN implementation optimized for edge AI devices that combines the advantages of LightNet <sup>[[1]](#references)</sup> and TensorRT <sup>[[2]](#references)</sup>. LightNet is a lightweight and high-performance neural network framework designed for edge devices, while TensorRT is a high-performance deep learning inference engine developed by NVIDIA for optimizing and running deep learning models on GPUs. LightNet-TRT uses the Network Definition API provided by TensorRT to integrate LightNet into TensorRT, allowing it to run efficiently and in real-time on edge devices.
-This is a reproduction of lightNet-TRT <sup>[[6]](#references)</sup>, which generates a TensorRT engine from the ONNX format.
+trt-lightNet is a CNN implementation optimized for edge AI devices that combines the advantages of LightNet <sup>[[1]](#references)</sup> and TensorRT <sup>[[2]](#references)</sup>. LightNet is a lightweight and high-performance neural network framework designed for edge devices, while TensorRT is a high-performance deep learning inference engine developed by NVIDIA for optimizing and running deep learning models on GPUs. trt-lightnet uses the Network Definition API provided by TensorRT to integrate LightNet into TensorRT, allowing it to run efficiently and in real-time on edge devices.
+This is a reproduction of trt-lightnet <sup>[[6]](#references)</sup>, which generates a TensorRT engine from the ONNX format.
 
 ## Key Improvements
 
 ### 2:4 Structured Sparsity
 
-LightNet-TRT utilizes 2:4 structured sparsity <sup>[[3]](#references)</sup>  to further optimize the network. 2:4 structured sparsity means that two values must be zero in each contiguous block of four values, resulting in a 50% reduction in the number of weights. This technique allows the network to use fewer weights and computations while maintaining accuracy.
+trt-lightnet utilizes 2:4 structured sparsity <sup>[[3]](#references)</sup>  to further optimize the network. 2:4 structured sparsity means that two values must be zero in each contiguous block of four values, resulting in a 50% reduction in the number of weights. This technique allows the network to use fewer weights and computations while maintaining accuracy.
 
 ![Sparsity](https://developer-blogs.nvidia.com/ja-jp/wp-content/uploads/sites/6/2022/06/2-4-structured-sparse-matrix.png "sparsity")
 
 ### NVDLA Execution
 
-LightNet-TRT also supports the execution of the neural network on the NVIDIA Deep Learning Accelerator (NVDLA) <sup>[[4]](#references)</sup> , a free and open architecture that provides high performance and low power consumption for deep learning inference on edge devices. By using NVDLA, LightNet-TRT can further improve the efficiency and performance of the network on edge devices.
+trt-lightnet also supports the execution of the neural network on the NVIDIA Deep Learning Accelerator (NVDLA) <sup>[[4]](#references)</sup> , a free and open architecture that provides high performance and low power consumption for deep learning inference on edge devices. By using NVDLA, trt-lightnet can further improve the efficiency and performance of the network on edge devices.
 
 ![NVDLA](https://i0.wp.com/techgrabyte.com/wp-content/uploads/2019/09/Nvidia-Open-Source-Its-Deep-Learning-Inference-Compiler-NVDLA-2.png?w=768&ssl=1 "NVDLA")
 
 
 ### Multi-Precision Quantization
 
-In addition to post training quantization <sup>[[5]](#references)</sup>, LightNet-TRT also supports multi-precision quantization, which allows the network to use different precision for weights and activations. By using mixed precision, LightNet-TRT can further reduce the memory usage and computational requirements of the network while still maintaining accuracy. By writing it in CFG, you can set the precision for each layer of your CNN.
+In addition to post training quantization <sup>[[5]](#references)</sup>, trt-lightnet also supports multi-precision quantization, which allows the network to use different precision for weights and activations. By using mixed precision, trt-lightnet can further reduce the memory usage and computational requirements of the network while still maintaining accuracy. By writing it in CFG, you can set the precision for each layer of your CNN.
 
 ![Quantization](https://developer-blogs.nvidia.com/wp-content/uploads/2021/07/qat-training-precision.png "Quantization")
 
@@ -28,9 +28,8 @@ In addition to post training quantization <sup>[[5]](#references)</sup>, LightNe
 
 ### Multitask Execution (Detection/Segmentation)
 
-LightNet-TRT also supports multitask execution, allowing the network to perform both object detection and segmentation tasks simultaneously. This enables the network to perform multiple tasks efficiently on edge devices, saving computational resources and power.
+trt-lightnet also supports multitask execution, allowing the network to perform both object detection and segmentation tasks simultaneously. This enables the network to perform multiple tasks efficiently on edge devices, saving computational resources and power.
 
-[![](https://img.youtube.com/vi/TmlW-b_t3sQ/0.jpg)](https://www.youtube.com/watch?v=TmlW-b_t3sQ)
 
 ## Installation
 
@@ -109,7 +108,7 @@ $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision [fp32/fp16/int8] 
 
 ## Implementation
 
-LightNet-TRT is built on the LightNet framework and integrates with TensorRT using the Network Definition API. The implementation is based on the following repositories:
+trt-lightnet is built on the LightNet framework and integrates with TensorRT using the Network Definition API. The implementation is based on the following repositories:
 
 -   LightNet: [https://github.com/daniel89710/lightNet](https://github.com/daniel89710/lightNet)
 -   TensorRT: [https://github.com/NVIDIA/TensorRT](https://github.com/NVIDIA/TensorRT)
@@ -127,5 +126,5 @@ trt-lightnet is a powerful and efficient implementation of CNNs using Edge AI. W
 [3]. [Accelerating Inference with Sparsity Using the NVIDIA Ampere Architecture and NVIDIA TensorRT](https://developer.nvidia.com/blog/accelerating-inference-with-sparsity-using-ampere-and-tensorrt/)  
 [4]. [NVDLA](http://nvdla.org/)  
 [5]. [Achieving FP32 Accuracy for INT8 Inference Using Quantization Aware Training with NVIDIA TensorRT](https://developer.nvidia.com/blog/achieving-fp32-accuracy-for-int8-inference-using-quantization-aware-training-with-tensorrt/)  
-[6]. [lightNet-TR](https://github.com/daniel89710/lightNet-TRT)
+[6]. [lightNet-TR](https://github.com/daniel89710/trt-lightnet)
 
