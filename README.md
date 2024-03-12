@@ -44,7 +44,7 @@ trt-lightnet also supports multitask execution, allowing the network to perform 
 1.  Clone the repository.
     
 ```shell
-$ git clone XXX
+$ git clone git@github.com:tier4/trt-lightnet.git
 $ cd trt-lightnet
 ```
 	
