@@ -1,7 +1,6 @@
 build/
 models/*
 configs/*
-data/
 *~
 *.engine
 x64/
