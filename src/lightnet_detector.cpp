@@ -143,19 +143,119 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
  * @param names The names of the classes corresponding to the detection outputs.
  * @param argmax2bgr A vector of BGR colors used for drawing segmentation masks.
  */
-void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names, std::vector<cv::Vec3b> &argmax2bgr)
+void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<cv::Vec3b> &argmax2bgr)
 {
   trt_lightnet->preprocess({image});
   trt_lightnet->doInference();
-  auto bbox = trt_lightnet->getBbox(image.rows, image.cols);
-  trt_lightnet->drawBbox(image, bbox, colormap, names);
-  auto masks = trt_lightnet->getMask(argmax2bgr);
+  trt_lightnet->makeBbox(image.rows, image.cols);
+  trt_lightnet->makeMask(argmax2bgr);
+  trt_lightnet->makeDepthmap();
+}
+
+/**
+ * Infers a subnet using a given Lightnet model and refines detections based on target classes.
+ * 
+ * @param trt_lightnet A shared pointer to the primary TensorRT Lightnet model.
+ * @param subnet_trt_lightnet A shared pointer to the secondary TensorRT Lightnet model for processing subnets.
+ * @param image The image in which detection is performed.
+ * @param names A vector of class names corresponding to class IDs.
+ * @param target A vector of target class names to filter the detections.
+ */
+void inferSubnetLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet_trt_lightnet, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
+  trt_lightnet->clearSubnetBbox();
+  for (auto &b : bbox) {
+    int flg = false;
+    for (auto &t : target) {
+      if (t == names[b.classId]) {
+	flg = true;
+      }
+    }
+    if (!flg) {
+      continue;
+    }
+    cv::Rect roi(b.box.x1, b.box.y1, b.box.x2-b.box.x1, b.box.y2-b.box.y1);
+    cv::Mat cropped = (image)(roi);
+    subnet_trt_lightnet->preprocess({cropped});
+    subnet_trt_lightnet->doInference();
+    subnet_trt_lightnet->makeBbox(cropped.rows, cropped.cols);    
+    std::vector<tensorrt_lightnet::BBoxInfo> bbox = subnet_trt_lightnet->getBbox();\
+    for (int i = 0; i < (int)bbox.size(); i++) {
+      bbox[i].box.x1 += b.box.x1;
+      bbox[i].box.y1 += b.box.y1;
+      bbox[i].box.x2 += b.box.x1;
+      bbox[i].box.y2 += b.box.y1;
+    }
+    trt_lightnet->appendSubnetBbox(bbox);    
+  }
+}
+
+/**
+ * Renders detected objects and their associated masks and depth maps on the image.
+ * 
+ * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
+ * @param image The image on which detections, masks, and depth maps will be overlaid.
+ * @param colormap A vector of vectors containing RGB values for coloring each class.
+ * @param names A vector of class names used for labeling the detections.
+ */
+void renderLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
+  std::vector<cv::Mat> masks = trt_lightnet->getMask();
+  std::vector<cv::Mat> depthmaps = trt_lightnet->getDepthmap();
+  
   for (const auto &mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, 0.5, 0.0, image);
+    cv::addWeighted(image, 1.0, resized, 0.45, 0.0, image);
+    cv::imshow("mask", mask);
+  }
+  for (const auto &depth : depthmaps) {
+    cv::imshow("depth", depth);
+  }
+  trt_lightnet->drawBbox(image, bbox, colormap, names);		
+
+}
+
+/**
+ * Renders detected objects using subnet model data on the image.
+ * 
+ * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
+ * @param image The image on which subnet detections will be drawn.
+ * @param colormap A vector of vectors containing RGB values used for drawing each class.
+ * @param subnet_names A vector of subnet class names used for labeling the detections.
+ */
+void renderSubnetLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &subnet_names)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();  
+  trt_lightnet->drawBbox(image, subnet_bbox, colormap, subnet_names);		
+}
+
+/**
+ * Applies a blurring effect on objects detected by the subnet within the given image.
+ * 
+ * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
+ * @param image The image on which the blurring effect will be applied to the detected objects.
+ */
+void blurObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image)
+{
+  cv::Mat resized;
+  cv::Mat cropped;
+  int kernel = 9;  
+  std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();
+  for (auto &b : subnet_bbox) {
+    if ((b.box.x2-b.box.x1) > kernel && (b.box.y2-b.box.y1) > kernel) {
+      int width = b.box.x2-b.box.x1;
+      int height = b.box.y2-b.box.y1;
+      cv::Rect roi(b.box.x1, b.box.y1, width, height);
+      cropped = (image)(roi);
+      cv::resize(cropped, resized, cv::Size(width/kernel, height/kernel), 0, 0, cv::INTER_NEAREST);
+      cv::resize(resized, cropped, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
+    }
   }
 }
+
 
 int
 main(int argc, char* argv[])
@@ -240,16 +340,71 @@ main(int argc, char* argv[])
 								       inference_config.batch_config,
 								           inference_config.workspace_size
 								       );
+
+  //Subnet configuration
+  std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet_trt_lightnet;
+  VisualizationConfig subnet_visualization_config;
+  std::vector<std::string> target;
+  std::vector<std::string> bluron = get_bluron_names();
+  if (get_subnet_onnx_path() != "not-specified") {
+    ModelConfig subnet_model_config = {
+      .model_path = get_subnet_onnx_path(),
+      .num_class = get_subnet_classes(),
+      .score_threshold = static_cast<float>(get_score_thresh()),
+      .anchors = get_subnet_anchors(),
+      .num_anchors = get_subnet_num_anchors(),
+      .nms_threshold = 0.25f // Assuming this value is fixed or retrieved similarly.
+    };
+    subnet_visualization_config = {
+      .dont_show = is_dont_show(),
+      .colormap = get_subnet_colormap(),
+      .names = get_subnet_names(),
+      .argmax2bgr = getArgmaxToBgr(get_seg_colormap())
+    };
+    target = get_target_names();
+    subnet_trt_lightnet = std::make_shared<tensorrt_lightnet::TrtLightnet>(
+									   subnet_model_config.model_path,
+									   inference_config.precision,
+									   subnet_model_config.num_class,
+									   subnet_model_config.score_threshold,
+									   subnet_model_config.nms_threshold,
+									   subnet_model_config.anchors,
+									   subnet_model_config.num_anchors,
+									   build_config,
+									   false, // Assuming this parameter is fixed or needs to be obtained similarly.
+									   inference_config.calibration_images,
+									   1.0, // Assuming scale factor is fixed or needs to be obtained from InferenceConfig.
+									   "", // Assuming this parameter is fixed or needs clarification.
+									   inference_config.batch_config,
+									   inference_config.workspace_size
+									   );    
+  }
+  
   
   if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
       std::cout << "Inference from " << file.path() << std::endl;
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_UNCHANGED);
-      inferLightnet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, visualization_config.argmax2bgr);
-      if (!visualization_config.dont_show) {
-	cv::imshow("inference", image);
-	if (cv::waitKey(0) == 'q') break;
+      inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
+
+      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	inferSubnetLightnet(trt_lightnet, subnet_trt_lightnet, image, visualization_config.names, target);
+	if (bluron.size()) {
+	  blurObjectFromSubnetBbox(trt_lightnet, image);
+	}
       }
+      
+      if (!visualization_config.dont_show) {
+	renderLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	  renderSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
+	}
+	if (image.rows > 1280 && image.cols > 1920) {
+	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
+	}
+	cv::imshow("inference", image);	
+	cv::waitKey(0);
+      }      
       if (path_config.flg_save) {
 	fs::path p = fs::path(path_config.save_path) / "detections";
 	save_image(image, p.string(), file.path().filename());
@@ -267,11 +422,27 @@ main(int argc, char* argv[])
       cv::Mat image;
       video >> image;
       if (image.empty()) break;
-      inferLightnet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, visualization_config.argmax2bgr);
+      inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
+
+      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	inferSubnetLightnet(trt_lightnet, subnet_trt_lightnet, image, visualization_config.names, target);
+	if (bluron.size()) {
+	  blurObjectFromSubnetBbox(trt_lightnet, image);
+	}
+      }
       
       if (!visualization_config.dont_show) {
-	cv::imshow("inference", image);
-	if (cv::waitKey(1) == 'q') break;
+	renderLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	  renderSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
+	}
+	if (image.rows > 1280 && image.cols > 1920) {
+	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
+	}
+	cv::imshow("inference", image);	
+	if (cv::waitKey(1) == 'q') {
+	  break;
+	}
       }
       if (flg_save) {
 	std::ostringstream sout;

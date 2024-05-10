@@ -190,6 +190,7 @@ public:
 
   bool isInitialized();
 
+  nvinfer1::DataType getBindingDataType(const int32_t index) const;  
   nvinfer1::Dims getBindingDimensions(const int32_t index) const;
   std::string getIOTensorName(const int32_t index);
   int32_t getNbBindings();
@@ -208,6 +209,11 @@ public:
   std::string getLayerInformation(nvinfer1::LayerInformationFormat format);
 #endif
 
+
+  std::string dataType2String(nvinfer1::DataType dataType) const;  
+
+  bool bindingIsInput(const int32_t index) const;
+  
 private:
   Logger logger_;
   fs::path model_file_path_;

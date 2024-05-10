@@ -245,20 +245,64 @@ public:
    * Retrieves bounding boxes for a given image size.
    * @param imageH height of the image.
    * @param imageW width of the image.
-   * @return vector of bounding box information.
    */
-  std::vector<BBoxInfo> getBbox(const int imageH, const int imageW);
+  void makeBbox(const int imageH, const int imageW);
 
+  /**
+   * Return BBox.
+   * 
+   * @return A vector of BBoxInfo containing the detected bounding boxes.
+   */
+  std::vector<BBoxInfo> getBbox();  
+
+  /**
+   * Generates depth maps from the network's output tensors that are not related to bounding box detections.
+   * The method identifies specific tensors for depth map generation based on channel size and name.
+   */
+  void makeDepthmap(void);
+
+  /**
+   * Retrieves the generated depth maps.
+   * 
+   * @return A vector of cv::Mat, each representing a depth map for an input image.
+   */    
+  std::vector<cv::Mat> getDepthmap(void);
+  
   /**
    * Converts the segmentation output to mask images.
    * Each pixel in the mask image is colored based on the class it belongs to,
    * using the provided mapping from classes to colors.
    * 
    * @param argmax2bgr A vector containing the mapping from segmentation classes to their corresponding colors in BGR format.
+   */
+  void makeMask(std::vector<cv::Vec3b> &argmax2bgr);
+
+  /**
+   * Return mask.
+   * 
    * @return A vector of OpenCV Mat objects, each representing a mask image where each pixel's color corresponds to its class's color.
    */
-  std::vector<cv::Mat> getMask(std::vector<cv::Vec3b> &argmax2bgr);
+  std::vector<cv::Mat> getMask(void);
 
+  /**
+   * Clears the detected bounding boxes specifically from the subnet.
+   */
+  void clearSubnetBbox();
+
+  /**
+   * Appends a vector of detected bounding boxes to the existing list of bounding boxes from the subnet.
+   * 
+   * @param bb A vector of BBoxInfo that contains bounding boxes to be appended.
+   */  
+  void appendSubnetBbox(std::vector<BBoxInfo> bb);
+
+  /**
+   * Returns the list of bounding boxes detected by the subnet.
+   * 
+   * @return A vector of BBoxInfo containing the bounding boxes detected by the subnet.
+   */
+  std::vector<BBoxInfo> getSubnetBbox();
+  
   /**
    * Prints the profiling information of the inference process, detailing the performance across each layer of the neural network.
    * This method provides insights into the time spent on each layer during inference, 
@@ -347,6 +391,26 @@ public:
    * Flag indicating whether the model performs multiple tasks beyond object detection, such as segmentation or classification.
    */
   int multitask_;
+
+  /**
+   * Stores bounding boxes detected by the primary network.
+   */  
+  std::vector<BBoxInfo> bbox_;
+
+  /**
+   * Stores mask images for each detected object, typically used in segmentation tasks.
+   */
+  std::vector<cv::Mat> masks_;
+
+  /**
+   * Stores depth maps generated from the network's output, providing depth information for each pixel.
+   */
+  std::vector<cv::Mat> depthmaps_;
+
+  /**
+   * Stores bounding boxes detected by the subnet, allowing for specialized processing on selected detections.
+   */
+  std::vector<BBoxInfo> subnet_bbox_;
 };
 
 }  // namespace tensorrt_lightnet

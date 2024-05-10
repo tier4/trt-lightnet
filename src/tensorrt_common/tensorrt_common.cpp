@@ -543,6 +543,11 @@ bool TrtCommon::isInitialized()
   return is_initialized_;
 }
 
+nvinfer1::DataType TrtCommon::getBindingDataType(const int32_t index) const
+{
+  return engine_->getBindingDataType(index);
+}
+
 nvinfer1::Dims TrtCommon::getBindingDimensions(const int32_t index) const
 {
 #if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + (NV_TENSOR_PATCH * 10) >= 8500
@@ -612,5 +617,38 @@ std::string TrtCommon::getLayerInformation(nvinfer1::LayerInformationFormat form
   return result;
 }
 #endif
+
+std::string TrtCommon::dataType2String(nvinfer1::DataType dataType) const
+{
+  std::string ret;
+  switch (dataType) {
+  case nvinfer1::DataType::kFLOAT :
+    ret = "kFLOAT";
+    break;
+  case nvinfer1::DataType::kHALF :
+    ret = "kHALF";
+    break;
+  case nvinfer1::DataType::kINT8 :
+    ret = "kINT8";
+    break;
+  case nvinfer1::DataType::kINT32 :
+    ret = "kINT32";
+    break;
+  case nvinfer1::DataType::kBOOL :
+    ret = "kBOOL";
+    break;
+  case nvinfer1::DataType::kUINT8 :
+    ret = "kUINT8";
+    break;
+  default :
+    ret = "UNKNOWN";
+  }
+  return ret;
+}
+
+bool TrtCommon::bindingIsInput(const int32_t index) const
+{
+  return engine_->bindingIsInput(index);
+}
 
 }  // namespace tensorrt_common

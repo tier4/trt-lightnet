@@ -50,13 +50,13 @@ DEFINE_bool(prof, false,
 DEFINE_string(rgb, "not-specified",
               "[OPTIONAL] Path to colormap for detections");
 
-DEFINE_string(cmap, "../data/t4-seg.colormap",
+DEFINE_string(mask, "../data/t4-seg.colormap",
               "[OPTIONAL] Path to colormap for semantic segmentation"
               "");
 
 DEFINE_string(names, "../data/t4.names",
-              "[OPTIONAL] Path to pre-generated calibration table. If flag is not set, a new calib "
-              "table <network-type>-<precision>-calibration.table will be generated");
+              "List of names for detections"
+              "List of names for detections");
 
 DEFINE_double(thresh, 0.2, "[OPTIONAL] thresh");
 
@@ -99,6 +99,33 @@ DEFINE_uint64(wh, 0, "[OPTIONAL] height for display window");
 DEFINE_string(anchors, "not-specified",
               "Anchor size");
 DEFINE_int64(num_anchors, 3, "Number of Anchors");
+
+//For subnet (Optional)
+DEFINE_string(subnet_onnx, "not-specified",
+              "Subnet ONNX Path, "
+              "Subnet ONNX Path");
+
+DEFINE_string(subnet_names, "not-specified",
+              "Subnet list of names for detections"
+              "Subnet list of names for detections");
+
+DEFINE_string(subnet_anchors, "not-specified",
+              "Anchor size");
+DEFINE_int64(subnet_num_anchors, 3, "Number of Anchors");
+
+DEFINE_uint64(subnet_c, 2, "[OPTIONAL] num of classes for the subnet inference engine.");
+
+DEFINE_string(subnet_rgb, "not-specified",
+              "[OPTIONAL] Path to colormap for detections");
+
+DEFINE_string(target_names, "not-specified",
+              "Subnet list of names for detections"
+              "Subnet list of names for detections");
+
+DEFINE_string(bluron, "not-specified",
+              "Subnet list of names for detections"
+              "Subnet list of names for detections");
+
 std::string
 get_onnx_path(void)
 {
@@ -260,7 +287,7 @@ get_colormap(void)
 std::vector<tensorrt_lightnet::Colormap>
 get_seg_colormap(void)
 {
-  std::string filename = FLAGS_cmap;
+  std::string filename = FLAGS_mask;
   std::vector<tensorrt_lightnet::Colormap> seg_cmap;
   if (filename != "not-specified") {
     std::vector<std::string> color_list = loadListFromTextFile(filename);    
@@ -427,3 +454,108 @@ get_window_info(void)
   return winfo;
 }
 
+
+//For subnet
+
+std::string
+get_subnet_onnx_path(void)
+{
+  return FLAGS_subnet_onnx;
+}
+
+std::vector<std::string>
+get_subnet_names(void)
+{
+  std::string filename = FLAGS_subnet_names;
+  std::vector<std::string> names;
+  if (filename != "not-specified") {
+    names = loadListFromTextFile(filename);    
+  }
+  return names;
+}
+
+int
+get_subnet_num_anchors(void)
+{
+  int num = FLAGS_subnet_num_anchors;
+  return num;
+}
+
+std::vector<int>
+get_subnet_anchors(void)
+{
+  std::string anchorsString = FLAGS_subnet_anchors;
+  std::vector<int> anchors;
+  if (anchorsString != "not-specified") {
+    while (!anchorsString.empty()) {
+      size_t npos = anchorsString.find_first_of(',');
+      if (npos != std::string::npos) {
+	int value = (int)std::stoi(trim(anchorsString.substr(0, npos)));
+	anchors.push_back(value);
+	anchorsString.erase(0, npos + 1);
+      } else {
+	int value = (int)std::stoi(trim(anchorsString));
+	anchors.push_back(value);
+	break;
+      }      
+    }    
+  }
+  return anchors;
+}
+
+int
+get_subnet_classes(void)
+{
+  return FLAGS_subnet_c;
+}
+
+std::vector<std::vector<int>>
+get_subnet_colormap(void)
+{
+  std::string filename = FLAGS_subnet_rgb;
+  std::vector<std::vector<int>> colormap;
+  if (filename != "not-specified") {
+    std::vector<std::string> color_list = loadListFromTextFile(filename);    
+    for (int i = 0; i < (int)color_list.size(); i++) {
+      std::string colormapString = color_list[i];
+      std::vector<int> rgb;
+      while (!colormapString.empty()) {
+	size_t npos = colormapString.find_first_of(',');
+	if (npos != std::string::npos) {
+	  int colormap = (int)std::stoi(trim(colormapString.substr(0, npos)));
+	  rgb.push_back(colormap);
+	  colormapString.erase(0, npos + 1);
+	} else {
+	  int colormap = (int)std::stoi(trim(colormapString));
+	  rgb.push_back(colormap);
+	  break;
+	}      
+      }
+      colormap.push_back(rgb);
+    }
+  }
+  return colormap;
+}
+
+std::vector<std::string>
+get_target_names(void)
+{
+  std::string filename = FLAGS_target_names;
+  std::vector<std::string> names;
+  if (filename != "not-specified") {
+    names = loadListFromTextFile(filename);    
+  }
+  return names;
+}
+
+
+std::vector<std::string>
+get_bluron_names(void)
+{
+  std::string filename = FLAGS_bluron;
+  std::vector<std::string> names;
+  if (filename != "not-specified") {
+    names = loadListFromTextFile(filename);    
+  }
+  return names;
+}

@@ -57,9 +57,6 @@ SOFTWARE.
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
 
-//namespace fs = std::filesystem;
-
-
 namespace
 {
   /**
@@ -282,7 +279,13 @@ namespace tensorrt_lightnet
     for (int i = 0; i < trt_common_->getNbBindings(); i++) {
       std::string name = trt_common_->getIOTensorName(i);
       const auto dims = trt_common_->getBindingDimensions(i);
-      std::cout << "Binding :" << name << " => " << dims.d[0] << "x" << dims.d[1] << "x" << dims.d[2] << "x" << dims.d[3] << std::endl;
+      nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+      if (trt_common_->bindingIsInput(i)) {
+	std::cout << "(Input)  ";
+      } else {
+	std::cout << "(Output) ";
+      }
+      std::cout << name << " => " << dims.d[0] << "x" << dims.d[1] << "x" << dims.d[2] << "x" << dims.d[3] << " (" << trt_common_->dataType2String(dataType)  << ")" << std::endl;
 
       // Calculate the tensor volume.
       const auto volume = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
@@ -408,16 +411,15 @@ namespace tensorrt_lightnet
    * 
    * @param imageH The height of the input image.
    * @param imageW The width of the input image.
-   * @return A vector of BBoxInfo containing the detected bounding boxes.
    */
-  std::vector<BBoxInfo> TrtLightnet::getBbox(const int imageH, const int imageW)
+  void TrtLightnet::makeBbox(const int imageH, const int imageW)
   {
-    std::vector<BBoxInfo> bbox;
+    bbox_.clear();
     const auto inputDims = trt_common_->getBindingDimensions(0);
     int inputW = inputDims.d[3];
     int inputH = inputDims.d[2];
     // Channel size formula to identify relevant tensor outputs for bounding boxes.
-    int chan_size = (4 + 1 + num_class_) * 3;
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -427,33 +429,116 @@ namespace tensorrt_lightnet
 
       if (chan_size == chan) { // Filtering out the tensors that match the channel size for detections.
 	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (i-1) * 2]), num_anchor_, output_h_.at(i-1).get(), gridW, gridH);
-	bbox.insert(bbox.end(), b.begin(), b.end());
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
       }
     }
 
-    return nonMaximumSuppression(nms_threshold_, bbox); // Apply NMS and return the filtered bounding boxes.
-    //    return nmsAllClasses(nms_threshold_, bbox, num_class_); // Apply NMS and return the filtered bounding boxes.    
+    bbox_ = nonMaximumSuppression(nms_threshold_, bbox_); // Apply NMS and return the filtered bounding boxes.
+    //    bbox_ = nmsAllClasses(nms_threshold_, bbox_, num_class_); // Apply NMS and return the filtered bounding boxes.    
   }
-  
+
   /**
-   * Generates segmentation masks from the network's output using argmax operation results.
-   * 
-   * @param argmax2bgr A vector mapping class indices to BGR colors for visualization.
-   * @return A vector of cv::Mat, each representing a segmentation mask for an input image.
+   * Clears the detected bounding boxes specifically from the subnet.
    */
-  std::vector<cv::Mat> TrtLightnet::getMask(std::vector<cv::Vec3b> &argmax2bgr)
+  void TrtLightnet::clearSubnetBbox()
   {
-    std::vector<cv::Mat> masks;
+    subnet_bbox_.clear();
+  }
+
+  /**
+   * Appends a vector of detected bounding boxes to the existing list of bounding boxes from the subnet.
+   * 
+   * @param bb A vector of BBoxInfo that contains bounding boxes to be appended.
+   */
+  void TrtLightnet::appendSubnetBbox(std::vector<BBoxInfo> bb)    
+  {
+    subnet_bbox_.insert(subnet_bbox_.end(), bb.begin(), bb.end());
+  }
+
+  /**
+   * Returns the list of bounding boxes detected by the subnet.
+   * 
+   * @return A vector of BBoxInfo containing the bounding boxes detected by the subnet.
+   */
+  std::vector<BBoxInfo> TrtLightnet::getSubnetBbox()
+  {
+    return subnet_bbox_;
+  }
+
+  /**
+   * Returns the list of bounding boxes detected by the engine.
+   * 
+   * @return A vector of BBoxInfo containing the bounding boxes detected by the engine.
+   */
+  std::vector<BBoxInfo> TrtLightnet::getBbox()
+  {
+    return bbox_;
+  }
+
+  /**
+   * Generates depth maps from the network's output tensors that are not related to bounding box detections.
+   * The method identifies specific tensors for depth map generation based on channel size and name.
+   */
+  void TrtLightnet::makeDepthmap(void)
+  {
+    depthmaps_.clear();
     // Formula to identify output tensors not related to bounding box detections.
-    int chan_size = (4 + 1 + num_class_) * 3;
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
       int outputW = dims.d[3];
       int outputH = dims.d[2];
       int chan = dims.d[1];
+      // Identifying tensors by channel size and name for depthmap.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) { // Check if tensor name contains "lgx" and tensor type is 'kFLOAT'.
+	  cv::Mat depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	  float *buf = (float *)output_h_.at(i-1).get();
+	  for (int y = 0; y < outputH; y++) {
+	    int stride = outputW * y;
 
-      // Identifying tensors by channel size and name for segmentation masks.
+	    for (int x = 0; x < outputW; x++) {
+	      float rel = 1.0 - buf[stride + x];
+	      int value = (int)(rel * 255);
+	      depthmap.at<unsigned char>(y, x) = value;
+	    }
+	  }
+	  depthmaps_.push_back(depthmap);
+	}
+      }
+    }
+  }
+
+  /**
+   * Retrieves the generated depth maps.
+   * 
+   * @return A vector of cv::Mat, each representing a depth map for an input image.
+   */  
+  std::vector<cv::Mat> TrtLightnet::getDepthmap(void)
+  {
+    return depthmaps_;
+  }
+    
+  /**
+   * Generates segmentation masks from the network's output using argmax operation results.
+   * 
+   * @param argmax2bgr A vector mapping class indices to BGR colors for visualization.
+   */
+  void TrtLightnet::makeMask(std::vector<cv::Vec3b> &argmax2bgr)
+  {
+    masks_.clear();
+    // Formula to identify output tensors not related to bounding box detections.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
       if (chan_size != chan) {
 	std::string name = trt_common_->getIOTensorName(i);
 	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
@@ -469,13 +554,22 @@ namespace tensorrt_lightnet
 	      ptr[x] = argmax2bgr[id]; // Mapping class index to color.
 	    }
 	  }
-	  masks.push_back(mask);
+	  masks_.push_back(mask);
 	}
       }
     }
-    return masks;
   }
 
+  /**
+   * Return mask.
+   * 
+   * @return A vector of OpenCV Mat objects, each representing a mask image where each pixel's color corresponds to its class's color.
+   */
+  std::vector<cv::Mat> TrtLightnet::getMask(void)
+  {
+    return masks_;
+  }
+  
   /**
    * Applies Non-Maximum Suppression (NMS) to filter out overlapping bounding boxes based on their IoU.
    *
