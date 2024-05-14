@@ -27,7 +27,7 @@ target_include_directories(detector PRIVATE extra/ ${OpenCV_INCLUDE_DIRS} ${CUDA
 add_executable(trt-lightnet src/lightnet_detector.cpp src/config_parser.cpp ${sources})
 
 target_include_directories(trt-lightnet PRIVATE include)
-target_link_libraries(trt-lightnet  ${OpenCV_LIBS} nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart gflags boost_system boost_filesystem "stdc++fs" "stdc++")
+target_link_libraries(trt-lightnet  ${OpenCV_LIBS} nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart gflags boost_system boost_filesystem "stdc++fs" "stdc++ -ldl")
 
 
 
