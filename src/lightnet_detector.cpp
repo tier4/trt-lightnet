@@ -23,7 +23,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-
+#include <omp.h>
 #include <config_parser.h>
 
 /**
@@ -83,6 +83,15 @@ struct VisualizationConfig {
   std::vector<cv::Vec3b> argmax2bgr; ///< Mapping from class indices to BGR colors for segmentation masks.
 };
 
+template <typename ... Args>
+std::string format(const std::string& fmt, Args ... args )
+{
+  size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
+  std::vector<char> buf(len + 1);
+  std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
+  return std::string(&buf[0], &buf[0] + len);
+}
+
 /**
  * Replaces the first occurrence of a substring within a string with another substring.
  * If the substring to replace is not found, the original string is returned unchanged.
@@ -109,7 +118,7 @@ std::string replaceOtherStr(std::string &replacedStr, const std::string &from, c
  * @param dir The directory where the image should be saved.
  * @param name The filename to use when saving the image.
  */
-void save_image(cv::Mat &img, const std::string &dir, const std::string &name)
+void saveImage(cv::Mat &img, const std::string &dir, const std::string &name)
 {
   fs::path p = fs::path(dir) / name; // Use / operator for path concatenation
   std::cout << "## Save " << p << std::endl;
@@ -134,8 +143,8 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
 }  
 
 /**
- * Performs inference on an image using a TensorRT LightNet model, processes the output to draw bounding boxes
- * and applies segmentation masks. This function encapsulates the preprocessing, inference, and postprocessing steps.
+ * Performs inference on an image using a TensorRT LightNet model, processes the output to get bounding boxes
+ * segmentation and depth. This function encapsulates the preprocessing, inference, and postprocessing steps.
  * 
  * @param trt_lightnet A shared pointer to an initialized TensorRT LightNet model.
  * @param image The image to process.
@@ -145,11 +154,26 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
  */
 void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<cv::Vec3b> &argmax2bgr)
 {
+  //preprocess
   trt_lightnet->preprocess({image});
+  //inference
   trt_lightnet->doInference();
-  trt_lightnet->makeBbox(image.rows, image.cols);
-  trt_lightnet->makeMask(argmax2bgr);
-  trt_lightnet->makeDepthmap();
+  //postprocess
+#pragma omp parallel sections
+  {
+#pragma omp section
+    {  
+      trt_lightnet->makeBbox(image.rows, image.cols);
+    }
+#pragma omp section
+    {  	
+      trt_lightnet->makeMask(argmax2bgr);
+    }
+#pragma omp section
+    {	  
+      trt_lightnet->makeDepthmap();
+    }
+  }
 }
 
 /**
@@ -192,14 +216,14 @@ void inferSubnetLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lig
 }
 
 /**
- * Renders detected objects and their associated masks and depth maps on the image.
+ * Draws detected objects and their associated masks and depth maps on the image.
  * 
  * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
  * @param image The image on which detections, masks, and depth maps will be overlaid.
  * @param colormap A vector of vectors containing RGB values for coloring each class.
  * @param names A vector of class names used for labeling the detections.
  */
-void renderLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names)
+void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names)
 {
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
   std::vector<cv::Mat> masks = trt_lightnet->getMask();
@@ -214,19 +238,18 @@ void renderLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet
   for (const auto &depth : depthmaps) {
     cv::imshow("depth", depth);
   }
-  trt_lightnet->drawBbox(image, bbox, colormap, names);		
-
+  trt_lightnet->drawBbox(image, bbox, colormap, names);
 }
 
 /**
- * Renders detected objects using subnet model data on the image.
+ * Draws detected objects using subnet model data on the image.
  * 
  * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
  * @param image The image on which subnet detections will be drawn.
  * @param colormap A vector of vectors containing RGB values used for drawing each class.
  * @param subnet_names A vector of subnet class names used for labeling the detections.
  */
-void renderSubnetLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &subnet_names)
+void drawSubnetLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &subnet_names)
 {
   std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();  
   trt_lightnet->drawBbox(image, subnet_bbox, colormap, subnet_names);		
@@ -240,9 +263,31 @@ void renderSubnetLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
  */
 void blurObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image)
 {
+  cv::Mat cropped;
+  int kernel = 15;  
+  std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();
+  for (auto &b : subnet_bbox) {
+    if ((b.box.x2-b.box.x1) > kernel && (b.box.y2-b.box.y1) > kernel) {
+      int width = b.box.x2-b.box.x1;
+      int height = b.box.y2-b.box.y1;
+      cv::Rect roi(b.box.x1, b.box.y1, width, height);
+      cropped = (image)(roi);
+      cv::blur(cropped, cropped, cv::Size(kernel, kernel));       
+    }
+  }
+}
+
+/**
+ * Applies a Pixelation on objects detected by the subnet within the given image.
+ * 
+ * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
+ * @param image The image on which the blurring effect will be applied to the detected objects.
+ */
+void applyPixelationObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image)
+{
   cv::Mat resized;
   cv::Mat cropped;
-  int kernel = 9;  
+  int kernel = 15;  
   std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();
   for (auto &b : subnet_bbox) {
     if ((b.box.x2-b.box.x1) > kernel && (b.box.y2-b.box.y1) > kernel) {
@@ -256,6 +301,97 @@ void blurObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> tr
   }
 }
 
+/**
+ * Writes detection predictions to a text file within the specified directory.
+ *
+ * @param save_path The path to the directory where the text file will be saved.
+ * @param filename The original filename of the image; used to construct the output text filename.
+ * @param names A vector of strings representing class names corresponding to class IDs.
+ * @param bbox A vector of bounding box information, each containing class IDs, probability scores, and coordinates.
+ */
+void
+writePredictions(std::string save_path, std::string filename, std::vector<std::string> names, std::vector<tensorrt_lightnet::BBoxInfo> bbox)
+{
+  int pos = filename.find_last_of(".");
+  std::string body = filename.substr(0, pos);
+  std::string dstName = body + ".txt";
+  std::ofstream writing_file;
+  fs::path p = save_path;
+  fs::create_directory(p);  
+  p.append(dstName);
+  writing_file.open(p.string(), std::ios::out);
+  for (const auto& bbi : bbox) {
+    int id = bbi.classId;
+    std::string writing_text = format("%s %f %d %d %d %d", names[id].c_str(), (float)bbi.prob, (int)bbi.box.x1, (int)bbi.box.y1, (int)bbi.box.x2, (int)bbi.box.y2);
+    writing_file << writing_text << std::endl;
+  }
+  writing_file.close();
+}
+
+/**
+ * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
+ * data from a TrtLightnet object.
+ *
+ * @param trt_lightnet A shared pointer to the TrtLightnet object containing detection and segmentation information.
+ * @param image The image on which detections were performed.
+ * @param colormap A vector of vectors, each inner vector representing a color map for the segmentation masks.
+ * @param names A vector of class names corresponding to detection class IDs.
+ * @param save_path The base path where all outputs will be saved.
+ * @param filename The filename of the original image; used to determine output filenames and formats.
+ */
+void
+saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names, std::string save_path, std::string filename)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
+  std::vector<cv::Mat> masks = trt_lightnet->getMask();
+  std::vector<cv::Mat> depthmaps = trt_lightnet->getDepthmap();
+  
+  std::string png_name = filename;
+  if (png_name.find(".jpg") != std::string::npos) {
+    replaceOtherStr(png_name, ".jpg", ".png");
+  }
+  fs::create_directories(fs::path(save_path));
+#pragma omp parallel sections
+  {
+#pragma omp section
+    {      
+      fs::path p = fs::path(save_path) / "detections";
+      fs::create_directories(p);
+      saveImage(image, p.string(), filename);
+    }
+#pragma omp section
+    {        
+      fs::path p = fs::path(save_path) / "predictions";
+      writePredictions(p.string(), filename, names, bbox);
+    }
+#pragma omp section
+    {
+      if (masks.size()) {
+	fs::create_directories(fs::path(save_path) / "segmentations");
+      }
+      for (int i = 0; i < (int)masks.size(); i++) {
+	fs::path p = fs::path(save_path) / "segmentations" / std::to_string(i);
+	fs::create_directory(p);
+	cv::Mat resized;
+	cv::resize(masks[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);    
+	saveImage(resized, p.string(), png_name);
+      }
+    }
+#pragma omp section
+    {
+      if (depthmaps.size()) {
+	fs::create_directories(fs::path(save_path) / "depthmaps");
+      }
+      for (int i = 0; i < (int)depthmaps.size(); i++) {
+	fs::path p = fs::path(save_path) / "depthmaps" / std::to_string(i);
+	fs::create_directory(p);    
+	cv::Mat resized;
+	cv::resize(depthmaps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+	saveImage(resized, p.string(), png_name);
+      }
+    }
+  }
+}
 
 int
 main(int argc, char* argv[])
@@ -307,12 +443,6 @@ main(int argc, char* argv[])
   // File saving flag and path from PathConfig.
   bool flg_save = path_config.flg_save;
   std::string save_path = path_config.save_path;
-
-  if (flg_save) {
-    fs::create_directories(fs::path(save_path) / "detections");
-    fs::create_directories(fs::path(save_path) / "segmentations");
-  }
-
   tensorrt_common::BuildConfig build_config(
 					    inference_config.calibration_type,
 					    inference_config.dla_core_id,
@@ -395,19 +525,20 @@ main(int argc, char* argv[])
       }
       
       if (!visualization_config.dont_show) {
-	renderLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
-	  renderSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
+	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
 	}
+      }
+      if (path_config.flg_save) {
+	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, file.path().filename());
+      }
+      if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
 	}
 	cv::imshow("inference", image);	
 	cv::waitKey(0);
-      }      
-      if (path_config.flg_save) {
-	fs::path p = fs::path(path_config.save_path) / "detections";
-	save_image(image, p.string(), file.path().filename());
       }
       count++;
     }
@@ -432,10 +563,18 @@ main(int argc, char* argv[])
       }
       
       if (!visualization_config.dont_show) {
-	renderLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
-	  renderSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
+	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
 	}
+      }
+      if (flg_save) {
+	std::ostringstream sout;
+	sout << std::setfill('0') << std::setw(6) << count;	  
+	std::string name = "frame_" + sout.str() + ".jpg";
+	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, name);	
+      }
+      if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
 	}
@@ -443,13 +582,6 @@ main(int argc, char* argv[])
 	if (cv::waitKey(1) == 'q') {
 	  break;
 	}
-      }
-      if (flg_save) {
-	std::ostringstream sout;
-	sout << std::setfill('0') << std::setw(6) << count;	  
-	std::string name = "frame_" + sout.str() + ".jpg";
-	fs::path p = fs::path(save_path) / "detections";	
-	save_image(image, p.string(), name);
       }
       count++;      
     }
