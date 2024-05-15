@@ -35,6 +35,8 @@ trt-lightnet also supports multitask execution, allowing the network to perform 
 
 ### Requirements
 
+#### For Local Installation
+
 -   CUDA 11.0 or later
 -   TensorRT 8.5 or 8.6
 
@@ -45,7 +47,16 @@ This repository has been tested with the following environments:
 - CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack5.1
 - CUDA 11.8 + TensorRT 8.6.1 on Ubuntu 22.04
 
-### Steps
+#### For Docker Installation
+
+-  Docker
+-  NVIDIA Container Toolkit
+
+This repository has been tested with the following environments:
+
+- Docker 24.0.7 + NVIDIA Container Toolkit 1.14.3 on Ubuntu 20.04
+
+### Steps for Local Installation
 
 1.  Clone the repository.
 
@@ -69,6 +80,27 @@ $ sudo apt install libopencv-dev
 $ mkdir build && cd build
 $ cmake ../
 $ make -j
+```
+
+### Steps for Docker Installation
+
+1.  Clone the repository.
+
+```shell
+$ git clone git@github.com:tier4/trt-lightnet.git
+$ cd trt-lightnet
+```
+
+2.  Build the docker image.
+
+```shell
+$ docker build -t trt-lightnet:latest .
+```
+
+3. Run the docker container.
+
+```shell
+$ docker run -it --gpus all trt-lightnet:latest
 ```
 
 ## Model
