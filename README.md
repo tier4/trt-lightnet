@@ -35,42 +35,49 @@ trt-lightnet also supports multitask execution, allowing the network to perform 
 
 ### Requirements
 
--   CUDA 11.0 or higher
--   TensorRT 8.0 or higher
--   OpenCV 3.0 or higher
+-   CUDA 11.0 or later
+-   TensorRT 8.5 or 8.6
+
+This repository has been tested with the following environments:
+
+- CUDA 11.7 + TensorRT 8.5.2 on Ubuntu 22.04
+- CUDA 12.2 + TensorRT 8.6.0 on Ubuntu 22.04
+- CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack5.1
+- CUDA 11.8 + TensorRT 8.6.1 on Ubuntu 22.04
 
 ### Steps
 
 1.  Clone the repository.
-    
+
 ```shell
 $ git clone git@github.com:tier4/trt-lightnet.git
 $ cd trt-lightnet
 ```
-	
+
 2.  Install libraries.
-						    
+
 ```shell
 $ sudo apt update
 $ sudo apt install libgflags-dev
 $ sudo apt install libboost-all-dev
+$ sudo apt install libopencv-dev
 ```
-										    
+
 3.  Compile the TensorRT implementation.
-											    
+
 ```shell
-$ mkdir build
+$ mkdir build && cd build
 $ cmake ../
 $ make -j
 ```
 
-## Model	
+## Model
  T.B.D
- 
+
 ## Usage
 
 ### Converting a LightNet model to a TensorRT engine
-						
+
 Build FP32 engine
 ```shell
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision fp32
@@ -81,7 +88,7 @@ Build FP16(HALF) engine
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision fp16
 ```
 
-Build INT8 engine 
+Build INT8 engine  
 (You need to prepare a list for calibration in "models/calibration_images.txt".)
 ```shell
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision int8 --first true
