@@ -1,0 +1,6 @@
+id,name,r,g,b
+0,none,0,0,0
+1,vehicle,0,0,255
+2,person,255,0,0
+3,bike,255,255,0
+4,obstacle,0,255,255
