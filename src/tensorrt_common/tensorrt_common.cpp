@@ -452,6 +452,19 @@ bool TrtCommon::buildEngineFromOnnx(
     }
   }
 
+  for (int i = num-1; i >=0; i--) {
+    nvinfer1::ILayer * layer = network->getLayer(i);
+    std::string name = layer->getName();
+    nvinfer1::ITensor * out = layer->getOutput(0);
+
+    for (int j = 0; j < (int)(build_config_->debug_tensors.size()); j++) {
+      if (name == build_config_->debug_tensors[j]) {
+	network->markOutput(*out);
+	std::cout << "MarkOutput for Debugging :" << name << std::endl;
+      }
+    }
+  }
+
   const auto input = network->getInput(0);
   const auto input_dims = input->getDimensions();
   const auto input_channel = input_dims.d[1];
@@ -649,6 +662,11 @@ std::string TrtCommon::dataType2String(nvinfer1::DataType dataType) const
 bool TrtCommon::bindingIsInput(const int32_t index) const
 {
   return engine_->bindingIsInput(index);
+}
+
+std::vector<std::string> TrtCommon::getDebugTensorNames(void)
+{
+  return build_config_->debug_tensors;
 }
 
 }  // namespace tensorrt_common

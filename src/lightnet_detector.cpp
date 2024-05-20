@@ -25,39 +25,8 @@
 #include <vector>
 #include <omp.h>
 #include <config_parser.h>
-
-/**
- * Configuration settings related to the model being used for inference.
- * Includes paths, classification thresholds, and anchor configurations.
- */
-struct ModelConfig {
-  std::string model_path; ///< Path to the serialized model file.
-  int num_class; ///< Number of classes the model can identify.
-  float score_threshold; ///< Threshold for classification scores to consider a detection valid.
-  std::vector<int> anchors; ///< Anchor sizes for the model.
-  int num_anchors; ///< Number of anchors.
-  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).
-};
-
-/**
- * Configuration settings for performing inference, including precision and
- * hardware-specific options.
- */
-struct InferenceConfig {
-  std::string precision; ///< Precision mode for inference (e.g., FP32, FP16).
-  bool profile; ///< Flag to enable profiling to measure inference performance.
-  bool sparse; ///< Flag to enable sparsity in the model, if supported.
-  int dla_core_id; ///< ID of the DLA core to use for inference, if applicable.
-  bool use_first_layer; ///< Flag to use the first layer in calculations, typically for INT8 calibration.
-  bool use_last_layer; ///< Flag to use the last layer in calculations, affecting performance and accuracy.
-  int batch_size; ///< Number of images processed in one inference batch.
-  double scale; ///< Scale factor for input image normalization.
-  std::string calibration_images; ///< Path to calibration images for INT8 precision mode.
-  std::string calibration_type; ///< Type of calibration to use (e.g., entropy).
-  tensorrt_common::BatchConfig batch_config; ///< Batch configuration for inference.
-  size_t workspace_size; ///< Maximum workspace size for TensorRT.
-};
-
+#include <cnpy.h>
+//#include "cnpy.h"
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -70,6 +39,7 @@ struct PathConfig {
   std::string output_path; ///< Path to save inference output.
   bool flg_save; ///< Flag indicating whether to save inference output.
   std::string save_path; ///< Directory path where output should be saved.
+  bool flg_save_debug_tensors;
 };
 
 /**
@@ -270,9 +240,15 @@ void blurObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> tr
     if ((b.box.x2-b.box.x1) > kernel && (b.box.y2-b.box.y1) > kernel) {
       int width = b.box.x2-b.box.x1;
       int height = b.box.y2-b.box.y1;
-      cv::Rect roi(b.box.x1, b.box.y1, width, height);
+      int w_offset = width  * 0.0;
+      int h_offset = height * 0.0;      
+      cv::Rect roi(b.box.x1+w_offset, b.box.y1+h_offset, width-w_offset*2, height-h_offset*2);
       cropped = (image)(roi);
-      cv::blur(cropped, cropped, cv::Size(kernel, kernel));       
+      if (width > 320 && height > 320) {
+	cv::blur(cropped, cropped, cv::Size(kernel*4, kernel*4));
+      } else {
+	cv::blur(cropped, cropped, cv::Size(kernel, kernel));
+      }
     }
   }
 }
@@ -363,6 +339,12 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
     {        
       fs::path p = fs::path(save_path) / "predictions";
       writePredictions(p.string(), filename, names, bbox);
+      std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = trt_lightnet->getSubnetBbox();
+      if (subnet_bbox.size()) {
+	fs::path p = fs::path(save_path) / "subnet_predictions";
+	auto subnet_names = get_subnet_names();
+	writePredictions(p.string(), filename, subnet_names, subnet_bbox);
+      }
     }
 #pragma omp section
     {
@@ -393,6 +375,99 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
   }
 }
 
+/**
+ * Visualizes a feature map by normalizing and scaling float data into an image.
+ *
+ * This function converts a single-channel feature map, represented as a float array,
+ * into an 8-bit single-channel image. The function normalizes the values of the feature
+ * map based on its minimum and maximum values, and scales it to the range of 0 to 255.
+ *
+ * @param data Pointer to the float array representing the feature map data.
+ * @param w Width of the feature map.
+ * @param h Height of the feature map.
+ * @return cv::Mat The resulting visualization of the feature map as an 8-bit grayscale image.
+ */
+cv::Mat
+visualizeFeaturemap(const float* data, int w, int h)
+{
+  float min = 0.0;
+  float max = 0.0;  
+  cv::Mat featuremap = cv::Mat::zeros(h, w, CV_8UC1);
+  for (int i = 0; i < w*h; i++) {
+    max = std::max(max, data[i]);
+    min = std::min(min, data[i]);	
+  }
+  float range = max - min;
+  for (int i = 0; i < w*h; i++) {
+    float tmp = (data[i] - min) / range * 255;
+    int x = i % h;
+    int y = i / h;
+    featuremap.at<unsigned char>(y, x) = (unsigned int)(tmp);
+  }
+  return featuremap;
+}
+
+/**
+ * Saves debugging tensor data into a .npz file for further analysis.
+ *
+ * This function retrieves debugging tensors from a given TrtLightnet instance and saves them
+ * into a specified directory as a .npz file. The tensors are expected to be in NCHW format.
+ *
+ * @param trt_lightnet Shared pointer to the TrtLightnet instance from which to retrieve tensors.
+ * @param save_path Directory path where the .npz file will be saved.
+ * @param filename Name of the file from which to derive the .npz file name.
+ */
+void
+saveDebugTensors(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::string save_path, std::string filename)
+{
+  std::vector<nvinfer1::Dims> dim_infos;
+  std::vector<std::string> names;  
+  std::vector<float*> debug_tensors = trt_lightnet->getDebugTensors(dim_infos, names);
+  int pos = filename.find_last_of(".");
+  std::string body = filename.substr(0, pos);
+  std::string dstName = body + ".npz";
+  std::ofstream writing_file;
+  fs::path p = save_path;
+  fs::create_directory(p);  
+  p.append(dstName);  
+  for (int d = 0; d < (int)dim_infos.size(); d++) {
+    //Supports only single batch
+    //NCHW
+    int w = dim_infos[d].d[3];
+    int h = dim_infos[d].d[2];
+    /*
+    for (int c = 0; c < (int)dim_infos[d].d[1]; c++) {
+      cv::Mat debug = visualizeFeaturemap(&((debug_tensors[d])[h * w * c]), w, h);
+      cv::imshow("debug_"+std::to_string(d)+"_"+std::to_string(c), debug);
+    }
+    */
+    cnpy::npz_save(p.string(), names[d], debug_tensors[d], {(long unsigned int)dim_infos[d].d[1], (long unsigned int)h, (long unsigned int)w}, "a");
+  }
+}
+
+/**
+ * Saves prediction results, including bounding boxes, to a specified directory.
+ *
+ * This function takes predictions from a TrtLightnet instance, specifically bounding boxes,
+ * and writes them to a specified path. The function supports specifying an output file format
+ * and directory.
+ *
+ * @param trt_lightnet Shared pointer to the TrtLightnet instance from which to retrieve predictions.
+ * @param names Vector of strings representing the names associated with the predictions.
+ * @param save_path Directory path where the prediction results will be saved.
+ * @param filename Base name of the file used for saving predictions.
+ * @param dst Additional path component or file destination specifier.
+ */
+void
+savePrediction(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::vector<std::string> &names, std::string save_path, std::string filename, std::string dst)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
+  
+  std::string png_name = filename;
+  fs::path p = fs::path(save_path) / dst;
+  writePredictions(p.string(), filename, names, bbox);
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -403,7 +478,7 @@ main(int argc, char* argv[])
     .score_threshold = static_cast<float>(get_score_thresh()),
     .anchors = get_anchors(),
     .num_anchors = get_num_anchors(),
-    .nms_threshold = 0.45f // Assuming this value is fixed or retrieved similarly.
+    .nms_threshold = 0.45f, // Assuming this value is fixed or retrieved similarly.
   };
 
   InferenceConfig inference_config = {
@@ -428,7 +503,8 @@ main(int argc, char* argv[])
     .dump_path = get_dump_path(),
     .output_path = get_output_path(),
     .flg_save = getSaveDetections(),
-    .save_path = getSaveDetectionsPath()
+    .save_path = getSaveDetectionsPath(),
+    .flg_save_debug_tensors = get_save_debug_tensors()
   };
 
   VisualizationConfig visualization_config = {
@@ -450,27 +526,12 @@ main(int argc, char* argv[])
 					    inference_config.use_last_layer,
 					    inference_config.profile,
 					    0.0, // Assuming a fixed value for missing float parameter, might need adjustment.
-					        inference_config.sparse
+					    inference_config.sparse,
+					    get_debug_tensors()
 					    );
 
-  // Initialize TensorRT LightNet using parameters from ModelConfig and InferenceConfig.
-  auto trt_lightnet = std::make_shared<tensorrt_lightnet::TrtLightnet>(
-								       model_config.model_path,
-								       inference_config.precision,
-								       model_config.num_class,
-								       model_config.score_threshold,
-								       model_config.nms_threshold,
-								       model_config.anchors,
-								       model_config.num_anchors,
-								       build_config,
-								       false, // Assuming this parameter is fixed or needs to be obtained similarly.
-								       inference_config.calibration_images,
-								       1.0, // Assuming scale factor is fixed or needs to be obtained from InferenceConfig.
-								       "", // Assuming this parameter is fixed or needs clarification.
-								       inference_config.batch_config,
-								           inference_config.workspace_size
-								       );
-
+  auto trt_lightnet =
+    std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
   //Subnet configuration
   std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet_trt_lightnet;
   VisualizationConfig subnet_visualization_config;
@@ -492,22 +553,8 @@ main(int argc, char* argv[])
       .argmax2bgr = getArgmaxToBgr(get_seg_colormap())
     };
     target = get_target_names();
-    subnet_trt_lightnet = std::make_shared<tensorrt_lightnet::TrtLightnet>(
-									   subnet_model_config.model_path,
-									   inference_config.precision,
-									   subnet_model_config.num_class,
-									   subnet_model_config.score_threshold,
-									   subnet_model_config.nms_threshold,
-									   subnet_model_config.anchors,
-									   subnet_model_config.num_anchors,
-									   build_config,
-									   false, // Assuming this parameter is fixed or needs to be obtained similarly.
-									   inference_config.calibration_images,
-									   1.0, // Assuming scale factor is fixed or needs to be obtained from InferenceConfig.
-									   "", // Assuming this parameter is fixed or needs clarification.
-									   inference_config.batch_config,
-									   inference_config.workspace_size
-									   );    
+    subnet_trt_lightnet =
+    std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config);    
   }
   
   
@@ -532,7 +579,14 @@ main(int argc, char* argv[])
       }
       if (path_config.flg_save) {
 	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, file.path().filename());
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	  //	  savePrediction(subnet_trt_lightnet, subnet_visualization_config.names, path_config.save_path, file.path().filename(), "subnet_predictions");
+	}
       }
+      if (path_config.flg_save_debug_tensors && path_config.save_path != "") {
+	fs::path p = fs::path(path_config.save_path) / "debug_tensors";
+	saveDebugTensors(trt_lightnet, p.string(), file.path().filename());
+      }      
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
@@ -559,6 +613,7 @@ main(int argc, char* argv[])
 	inferSubnetLightnet(trt_lightnet, subnet_trt_lightnet, image, visualization_config.names, target);
 	if (bluron.size()) {
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
+	  //applyPixelationObjectFromSubnetBbox(trt_lightnet, image);
 	}
       }
       
@@ -572,8 +627,16 @@ main(int argc, char* argv[])
 	std::ostringstream sout;
 	sout << std::setfill('0') << std::setw(6) << count;	  
 	std::string name = "frame_" + sout.str() + ".jpg";
-	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, name);	
+	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, name);
       }
+      if (path_config.flg_save_debug_tensors && path_config.save_path != "") {
+	std::ostringstream sout;
+	sout << std::setfill('0') << std::setw(6) << count;	  
+	std::string name = "frame_" + sout.str() + ".jpg";
+	fs::path p = fs::path(path_config.save_path) / "debug_tensors";
+	saveDebugTensors(trt_lightnet, p.string(), name);
+      }	
+      
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);

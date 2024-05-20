@@ -25,6 +25,39 @@
 #include <string>
 #include <vector>
 #include <NvInfer.h>
+
+/**
+ * Configuration settings related to the model being used for inference.
+ * Includes paths, classification thresholds, and anchor configurations.
+ */
+struct ModelConfig {
+  std::string model_path; ///< Path to the serialized model file.
+  int num_class; ///< Number of classes the model can identify.
+  float score_threshold; ///< Threshold for classification scores to consider a detection valid.
+  std::vector<int> anchors; ///< Anchor sizes for the model.
+  int num_anchors; ///< Number of anchors.
+  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).  
+};
+
+/**
+ * Configuration settings for performing inference, including precision and
+ * hardware-specific options.
+ */
+struct InferenceConfig {
+  std::string precision; ///< Precision mode for inference (e.g., FP32, FP16).
+  bool profile; ///< Flag to enable profiling to measure inference performance.
+  bool sparse; ///< Flag to enable sparsity in the model, if supported.
+  int dla_core_id; ///< ID of the DLA core to use for inference, if applicable.
+  bool use_first_layer; ///< Flag to use the first layer in calculations, typically for INT8 calibration.
+  bool use_last_layer; ///< Flag to use the last layer in calculations, affecting performance and accuracy.
+  int batch_size; ///< Number of images processed in one inference batch.
+  double scale; ///< Scale factor for input image normalization.
+  std::string calibration_images; ///< Path to calibration images for INT8 precision mode.
+  std::string calibration_type; ///< Type of calibration to use (e.g., entropy).
+  tensorrt_common::BatchConfig batch_config; ///< Batch configuration for inference.
+  size_t workspace_size; ///< Maximum workspace size for TensorRT.
+};
+
 /**
  * Checks if a given value is contained within a string. This template function is versatile,
  * allowing for different types of values to be checked against the string, assuming the value
@@ -92,33 +125,23 @@ class TrtLightnet
 public:
 
   /**
-   * Constructs a TrtLightnet object for performing inference with a TensorRT engine.
-   * This constructor initializes the object with various configuration parameters for model execution.
-   * 
-   * @param model_path The file path to the serialized model.
-   * @param precision The precision mode for TensorRT execution (e.g., "FP32", "FP16", "INT8").
-   * @param num_class The number of classes that the model predicts (default is 8).
-   * @param score_threshold The threshold for filtering out predictions with low confidence scores (default is 0.3).
-   * @param nms_threshold The threshold for the Non-Maximum Suppression (NMS) algorithm (default is 0.7).
-   * @param anchors A list of anchor sizes for the model (default includes common anchor sizes).
-   * @param num_anchor The number of anchors to use (default is 3).
-   * @param build_config Configuration options for building the TensorRT engine.
-   * @param use_gpu_preprocess A flag indicating whether to use GPU for preprocessing tasks (default is false).
-   * @param calibration_image_list_file The file path to a list of images used for INT8 calibration (default is an empty string).
-   * @param norm_factor A normalization factor applied to the input images (default is 1.0).
-   * @param cache_dir A directory for caching dynamic library files for re-use (default is an empty string). 
-   *                  Marked as maybe_unused to indicate it may not be used in all configurations.
-   * @param batch_config Configuration for batch size management during inference (default is {1, 1, 1}).
-   * @param max_workspace_size The maximum workspace size for TensorRT (default is 1GB).
-   */
-  TrtLightnet(const std::string &model_path, const std::string &precision, const int num_class = 8,
-	      const float score_threshold = 0.3, const float nms_threshold = 0.7,
-	      const std::vector<int> anchors = {9, 15,  22, 36,  49, 54,  33,129,  90,101,  83,348, 165,186, 227,463, 703,613}, int num_anchor = 3,
-	      const tensorrt_common::BuildConfig build_config = tensorrt_common::BuildConfig(),
-	      const bool use_gpu_preprocess = false, std::string calibration_image_list_file = std::string(),
-	      const double norm_factor = 1.0, [[maybe_unused]] const std::string &cache_dir = "",
-	      const tensorrt_common::BatchConfig &batch_config = {1, 1, 1},
-	      const size_t max_workspace_size = (1 << 30));
+   * Constructs a TrtLightnet object configured for running TensorRT inference.
+   *
+   * This constructor initializes a TrtLightnet object using provided model and inference configurations.
+   * It handles setting up the TensorRT environment, including configuring precision, calibrators, and
+   * workspace size based on the given settings. If INT8 precision is specified, it also manages the
+   * calibration process using provided calibration images. Exception handling is included to ensure
+   * that necessary prerequisites for chosen precision modes are met.
+   *
+   * @param model_config Configuration struct containing model-specific parameters such as path, class number,
+   * score threshold, NMS threshold, and anchor configurations.
+   * @param inference_config Configuration struct containing inference-specific settings like precision,
+   * calibration images, workspace size, and batch configuration.
+   * @param build_config Struct containing build-specific settings for TensorRT including the calibration type and clip value.
+   * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
+   * TensorRT engine initialization fails.
+   */  
+  TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config);
 
   /**
    * Initializes the INT8 calibrator based on the specified calibration type.
@@ -284,6 +307,20 @@ public:
    */
   std::vector<cv::Mat> getMask(void);
 
+  /**
+   * Retrieves debugging tensors from the TensorRT bindings that are not inputs.
+   *
+   * This method iterates over all bindings in a TensorRT common context (`trt_common_`),
+   * identifying output tensors whose names match any in a predefined list of debug tensor names.
+   * For each matching tensor, this method collects its memory buffer, dimensions, and name,
+   * and stores them for external use, typically for debugging or visualization purposes.
+   *
+   * @param dim_infos Reference to a vector of nvinfer1::Dims to be filled with dimensions of each tensor.
+   * @param names Reference to a vector of strings to be filled with names of each tensor.
+   * @return std::vector<float*> A vector of pointers to the buffers of debug tensors.
+   */
+  std::vector<float*> getDebugTensors(std::vector<nvinfer1::Dims> &dim_infos, std::vector<std::string> &debug_names);
+  
   /**
    * Clears the detected bounding boxes specifically from the subnet.
    */

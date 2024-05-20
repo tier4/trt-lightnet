@@ -20,14 +20,14 @@ find_package(OpenCV REQUIRED)
 file(GLOB_RECURSE sources src/tensorrt_common/tensorrt_common.cpp src/tensorrt_common/simple_profiler.cpp src/tensorrt_lightnet/tensorrt_lightnet.cpp)
 add_library(detector SHARED ${sources})
 
-target_link_libraries(detector  nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart  "stdc++fs")
+target_link_libraries(detector  nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart "stdc++fs")
 target_include_directories(detector PRIVATE extra/ ${OpenCV_INCLUDE_DIRS} ${CUDA_TOOLKIT_ROOT_DIR}/include )
 
 
 add_executable(trt-lightnet src/lightnet_detector.cpp src/config_parser.cpp ${sources})
 
 target_include_directories(trt-lightnet PRIVATE include)
-target_link_libraries(trt-lightnet  ${OpenCV_LIBS} nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart gflags boost_system boost_filesystem "stdc++fs" "stdc++ -ldl")
+target_link_libraries(trt-lightnet  ${OpenCV_LIBS} nvinfer nvinfer_plugin nvparsers nvonnxparser cuda cudart gflags boost_system boost_filesystem cnpy z "stdc++fs" "stdc++ -ldl")
 
 
 

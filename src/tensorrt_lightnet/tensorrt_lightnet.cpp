@@ -180,15 +180,44 @@ namespace
 
 namespace tensorrt_lightnet
 {
-  TrtLightnet::TrtLightnet(
-			   const std::string& model_path, const std::string& precision, const int num_class,
-			   const float score_threshold, const float nms_threshold, const std::vector<int> anchors, int num_anchor,
-			   tensorrt_common::BuildConfig build_config, const bool use_gpu_preprocess,
-			   std::string calibration_image_list_path, const double norm_factor,
-			   [[maybe_unused]] const std::string& cache_dir, const tensorrt_common::BatchConfig& batch_config,
-			   const size_t max_workspace_size)
-  : src_width_(-1), src_height_(-1), norm_factor_(norm_factor), batch_size_(batch_config[2]), multitask_(0)
+
+  /**
+   * Constructs a TrtLightnet object configured for running TensorRT inference.
+   *
+   * This constructor initializes a TrtLightnet object using provided model and inference configurations.
+   * It handles setting up the TensorRT environment, including configuring precision, calibrators, and
+   * workspace size based on the given settings. If INT8 precision is specified, it also manages the
+   * calibration process using provided calibration images. Exception handling is included to ensure
+   * that necessary prerequisites for chosen precision modes are met.
+   *
+   * @param model_config Configuration struct containing model-specific parameters such as path, class number,
+   * score threshold, NMS threshold, and anchor configurations.
+   * @param inference_config Configuration struct containing inference-specific settings like precision,
+   * calibration images, workspace size, and batch configuration.
+   * @param build_config Struct containing build-specific settings for TensorRT including the calibration type and clip value.
+   * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
+   * TensorRT engine initialization fails.
+   */  
+  TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config)
   {
+    const std::string& model_path = model_config.model_path;
+    const std::string& precision = inference_config.precision;
+    const int num_class = model_config.num_class;    
+    const float score_threshold = model_config.score_threshold;
+    const float nms_threshold = model_config.nms_threshold;
+    const std::vector<int> anchors = model_config.anchors;
+    int num_anchor = model_config.num_anchors;
+    std::string calibration_image_list_path = inference_config.calibration_images;
+    const double norm_factor = 1.0;
+    const tensorrt_common::BatchConfig& batch_config = inference_config.batch_config;
+    const size_t max_workspace_size = inference_config.workspace_size;
+    src_width_ = -1;
+    src_height_ = -1;
+    norm_factor_ = norm_factor;
+    batch_size_ = batch_config[2];
+    multitask_ = 0;
+
+    
     if (precision == "int8") {
       if (build_config.clip_value <= 0.0 && calibration_image_list_path.empty()) {
 	throw std::runtime_error(
@@ -420,16 +449,20 @@ namespace tensorrt_lightnet
     int inputH = inputDims.d[2];
     // Channel size formula to identify relevant tensor outputs for bounding boxes.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
-
-    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+    int detection_count = 0;
+    for (int i = 0; i < trt_common_->getNbBindings(); i++) {
+      if (trt_common_->bindingIsInput(i)) {
+	continue;
+      }
       const auto dims = trt_common_->getBindingDimensions(i);
       int gridW = dims.d[3];
       int gridH = dims.d[2];
       int chan = dims.d[1];
 
       if (chan_size == chan) { // Filtering out the tensors that match the channel size for detections.
-	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (i-1) * 2]), num_anchor_, output_h_.at(i-1).get(), gridW, gridH);
+	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, output_h_.at(i-1).get(), gridW, gridH);
 	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
       }
     }
 
@@ -569,7 +602,41 @@ namespace tensorrt_lightnet
   {
     return masks_;
   }
-  
+
+  /**
+   * Retrieves debugging tensors from the TensorRT bindings that are not inputs.
+   *
+   * This method iterates over all bindings in a TensorRT common context (`trt_common_`),
+   * identifying output tensors whose names match any in a predefined list of debug tensor names.
+   * For each matching tensor, this method collects its memory buffer, dimensions, and name,
+   * and stores them for external use, typically for debugging or visualization purposes.
+   *
+   * @param dim_infos Reference to a vector of nvinfer1::Dims to be filled with dimensions of each tensor.
+   * @param names Reference to a vector of strings to be filled with names of each tensor.
+   * @return std::vector<float*> A vector of pointers to the buffers of debug tensors.
+   */
+  std::vector<float*> TrtLightnet::getDebugTensors(std::vector<nvinfer1::Dims> &dim_infos, std::vector<std::string> &names)
+  {
+    std::vector<float*> debug_tensors;
+    for (int i = 0; i < trt_common_->getNbBindings(); i++) {
+      if (trt_common_->bindingIsInput(i)) {
+	continue;
+      }
+      std::string name = trt_common_->getIOTensorName(i);
+      std::vector<std::string> debug_names = trt_common_->getDebugTensorNames();
+      for (int j = 0; j < (int)(debug_names.size()); j++) {
+	if (debug_names[j] == name) {
+	  const auto dims = trt_common_->getBindingDimensions(i);
+	  float *buf = (float *)output_h_.at(i-1).get();
+	  debug_tensors.emplace_back(buf);
+	  dim_infos.emplace_back(dims);
+	  names.emplace_back(name);
+	}
+      }
+    }
+    return debug_tensors;
+  }
+    
   /**
    * Applies Non-Maximum Suppression (NMS) to filter out overlapping bounding boxes based on their IoU.
    *

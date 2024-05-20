@@ -88,7 +88,7 @@ DEFINE_double(clip, 0.0, "[OPTIONAL] Clip value for implicit quantization in out
 
 DEFINE_bool(save_detections, false,
             "[OPTIONAL] Flag to save images overlayed with objects detected.");
-DEFINE_string(save_detections_path, "outputs/",
+DEFINE_string(save_detections_path, "",
               "[OPTIONAL] Path where the images overlayed with bounding boxes are to be saved");
 
 DEFINE_uint64(wx, 0, "[OPTIONAL] position x for display window");
@@ -125,6 +125,12 @@ DEFINE_string(target_names, "not-specified",
 DEFINE_string(bluron, "not-specified",
               "Subnet list of names for detections"
               "Subnet list of names for detections");
+
+DEFINE_string(debug_tensors, "not-specified",
+              "tensor names for debug");
+
+DEFINE_bool(save_debug_tensors, false,
+              "save debug tensors");
 
 std::string
 get_onnx_path(void)
@@ -558,4 +564,33 @@ get_bluron_names(void)
     names = loadListFromTextFile(filename);    
   }
   return names;
+}
+
+std::vector<std::string>
+get_debug_tensors(void)
+{
+  std::string debug_tensors_string = FLAGS_debug_tensors;
+  std::vector<std::string> debug_tensors;
+  if (debug_tensors_string != "not-specified") {
+    while (!debug_tensors_string.empty()) {
+      size_t npos = debug_tensors_string.find_first_of(',');
+      if (npos != std::string::npos) {
+	std::string value = trim(debug_tensors_string.substr(0, npos));
+	debug_tensors.push_back(value);
+	debug_tensors_string.erase(0, npos + 1);
+      } else {
+	std::string value = trim(debug_tensors_string);
+	debug_tensors.push_back(value);
+	break;
+      }      
+    }    
+  }
+  return debug_tensors;
+}
+
+
+bool
+get_save_debug_tensors(void)
+{
+  return FLAGS_save_debug_tensors;
 }

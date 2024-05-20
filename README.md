@@ -37,7 +37,7 @@ trt-lightnet also supports multitask execution, allowing the network to perform 
 
 -   CUDA 11.0 or later
 -   TensorRT 8.5 or 8.6
-
+-   cnpy for debug of tensors
 This repository has been tested with the following environments:
 
 - CUDA 11.7 + TensorRT 8.5.2 on Ubuntu 22.04
@@ -62,6 +62,11 @@ $ sudo apt install libgflags-dev
 $ sudo apt install libboost-all-dev
 $ sudo apt install libopencv-dev
 ```
+
+Install from the following repository.
+
+https://github.com/rogersce/cnpy
+
 
 3.  Compile the TensorRT implementation.
 

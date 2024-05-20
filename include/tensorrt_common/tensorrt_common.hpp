@@ -66,6 +66,7 @@ struct BuildConfig
 
   bool sparse; //2:4 Structured Sparsity
 
+  std::vector<std::string> debug_tensors;  
   // Supported calibration type
   const std::array<std::string, 4> valid_calib_type = {"Entropy", "Legacy", "Percentile", "MinMax"};
 
@@ -76,21 +77,23 @@ struct BuildConfig
     quantize_last_layer(false),
     profile_per_layer(false),
     clip_value(0.0),
-    sparse(false)
+    sparse(false),
+    debug_tensors({})
   {
   }
 
   explicit BuildConfig(
     const std::string & calib_type_str, const int dla_core_id = -1,
     const bool quantize_first_layer = false, const bool quantize_last_layer = false,
-    const bool profile_per_layer = false, const double clip_value = 0.0, const bool sparse =false)
+    const bool profile_per_layer = false, const double clip_value = 0.0, const bool sparse =false, const std::vector<std::string> debug_tensors ={})
   : calib_type_str(calib_type_str),
     dla_core_id(dla_core_id),
     quantize_first_layer(quantize_first_layer),
     quantize_last_layer(quantize_last_layer),
     profile_per_layer(profile_per_layer),
     clip_value(clip_value),
-    sparse(sparse)
+    sparse(sparse),
+    debug_tensors(debug_tensors)
   {
 #ifndef LIGHTNET_STANDALONE    
     if (
@@ -213,6 +216,8 @@ public:
   std::string dataType2String(nvinfer1::DataType dataType) const;  
 
   bool bindingIsInput(const int32_t index) const;
+
+  std::vector<std::string> getDebugTensorNames(void);
   
 private:
   Logger logger_;

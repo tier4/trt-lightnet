@@ -285,3 +285,17 @@ std::vector<std::string> get_target_names(void);
  * @return A vector of strings representing the names for blurring.
  */
 std::vector<std::string> get_bluron_names(void);
+
+/**
+ * Retrieves a list of debug tensor names from a global flag.
+ * 
+ * This function parses the `FLAGS_debug_tensors` global variable, which is expected to contain a comma-separated list of tensor names. If the variable is set to "not-specified", no tensors are retrieved. This function splits the string by commas, trims each resulting substring, and adds it to a vector of strings.
+ *
+ * @return std::vector<std::string> - A vector containing the names of the debug tensors. If the `FLAGS_debug_tensors` is "not-specified" or empty, an empty vector is returned.
+ */
+std::vector<std::string>
+get_debug_tensors(void);
+
+bool
+get_save_debug_tensors(void);
+
