@@ -155,34 +155,47 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
  * @param names A vector of class names corresponding to class IDs.
  * @param target A vector of target class names to filter the detections.
  */
-void inferSubnetLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet_trt_lightnet, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target)
+void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
 {
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
   trt_lightnet->clearSubnetBbox();
-  for (auto &b : bbox) {
-    int flg = false;
-    for (auto &t : target) {
-      if (t == names[b.classId]) {
-	flg = true;
+  int num = (int)bbox.size();
+  std::vector<std::vector<tensorrt_lightnet::BBoxInfo>> tmpBbox;
+  tmpBbox.resize(numWorks);
+#pragma omp parallel for  
+  for (int p = 0; p < numWorks; p++) {
+    std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
+    for (int i = (p) * num / numWorks; i < (p+1) * num / numWorks; i++) {
+      auto b = bbox[i];
+      int flg = false;
+      for (auto &t : target) {
+	if (t == names[b.classId]) {
+	  flg = true;
+	}
       }
+      if (!flg) {
+	continue;
+      }
+      cv::Rect roi(b.box.x1, b.box.y1, b.box.x2-b.box.x1, b.box.y2-b.box.y1);
+      cv::Mat cropped = (image)(roi);
+      subnet_trt_lightnets[p]->preprocess({cropped});
+      subnet_trt_lightnets[p]->doInference();
+      subnet_trt_lightnets[p]->makeBbox(cropped.rows, cropped.cols);    
+      auto bb = subnet_trt_lightnets[p]->getBbox();
+      for (int j = 0; j < (int)bb.size(); j++) {
+	bb[j].box.x1 += b.box.x1;
+	bb[j].box.y1 += b.box.y1;
+	bb[j].box.x2 += b.box.x1;
+	bb[j].box.y2 += b.box.y1;
+      }      
+      subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
     }
-    if (!flg) {
-      continue;
-    }
-    cv::Rect roi(b.box.x1, b.box.y1, b.box.x2-b.box.x1, b.box.y2-b.box.y1);
-    cv::Mat cropped = (image)(roi);
-    subnet_trt_lightnet->preprocess({cropped});
-    subnet_trt_lightnet->doInference();
-    subnet_trt_lightnet->makeBbox(cropped.rows, cropped.cols);    
-    std::vector<tensorrt_lightnet::BBoxInfo> bbox = subnet_trt_lightnet->getBbox();\
-    for (int i = 0; i < (int)bbox.size(); i++) {
-      bbox[i].box.x1 += b.box.x1;
-      bbox[i].box.y1 += b.box.y1;
-      bbox[i].box.x2 += b.box.x1;
-      bbox[i].box.y2 += b.box.y1;
-    }
-    trt_lightnet->appendSubnetBbox(bbox);    
+    tmpBbox[p] = subnetBbox;
   }
+  
+  for (int p = 0; p < numWorks; p++) {
+    trt_lightnet->appendSubnetBbox(tmpBbox[p]);
+  }  
 }
 
 /**
@@ -533,10 +546,11 @@ main(int argc, char* argv[])
   auto trt_lightnet =
     std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
   //Subnet configuration
-  std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet_trt_lightnet;
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets;
   VisualizationConfig subnet_visualization_config;
   std::vector<std::string> target;
   std::vector<std::string> bluron = get_bluron_names();
+  int numWorks = omp_get_max_threads();
   if (get_subnet_onnx_path() != "not-specified") {
     ModelConfig subnet_model_config = {
       .model_path = get_subnet_onnx_path(),
@@ -553,8 +567,10 @@ main(int argc, char* argv[])
       .argmax2bgr = getArgmaxToBgr(get_seg_colormap())
     };
     target = get_target_names();
-    subnet_trt_lightnet =
-    std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config);    
+    for (int w = 0; w < numWorks; w++) {
+      subnet_trt_lightnets.push_back(
+				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
+    }
   }
   
   
@@ -564,8 +580,8 @@ main(int argc, char* argv[])
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_UNCHANGED);
       inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
 
-      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
-	inferSubnetLightnet(trt_lightnet, subnet_trt_lightnet, image, visualization_config.names, target);
+      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
+	inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
 	if (bluron.size()) {
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
 	}
@@ -573,13 +589,13 @@ main(int argc, char* argv[])
       
       if (!visualization_config.dont_show) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
 	}
       }
       if (path_config.flg_save) {
 	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, file.path().filename());
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  //	  savePrediction(subnet_trt_lightnet, subnet_visualization_config.names, path_config.save_path, file.path().filename(), "subnet_predictions");
 	}
       }
@@ -609,8 +625,8 @@ main(int argc, char* argv[])
       if (image.empty()) break;
       inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
 
-      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
-	inferSubnetLightnet(trt_lightnet, subnet_trt_lightnet, image, visualization_config.names, target);
+      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
+	inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
 	if (bluron.size()) {
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
 	  //applyPixelationObjectFromSubnetBbox(trt_lightnet, image);
@@ -619,7 +635,7 @@ main(int argc, char* argv[])
       
       if (!visualization_config.dont_show) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnet) {
+	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
 	}
       }

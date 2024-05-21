@@ -367,7 +367,7 @@ namespace tensorrt_lightnet
 
     // Normalize images and convert to blob directly without additional copying.
     float scale = 1 / 255.0;
-    const auto nchw_images = cv::dnn::blobFromImages(images, scale, cv::Size(inputW, inputH), cv::Scalar(0.0, 0.0, 0.0), true);
+    const auto nchw_images = cv::dnn::blobFromImages(images, scale, cv::Size(inputW, inputH), cv::Scalar(0.0, 0.0, 0.0), true);   
 
     // If the data is continuous, we can use it directly. Otherwise, we need to clone it for contiguous memory.
     input_h_ = nchw_images.isContinuous() ? nchw_images.reshape(1, nchw_images.total()) : nchw_images.reshape(1, nchw_images.total()).clone();
