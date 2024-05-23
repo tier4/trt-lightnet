@@ -568,6 +568,10 @@ main(int argc, char* argv[])
     };
     target = get_target_names();
     for (int w = 0; w < numWorks; w++) {
+      if (build_config.dla_core_id >= 2) {
+	//use multiple dlas [DLA0 and DLA1]
+	build_config.dla_core_id = (int)w/2;
+      }
       subnet_trt_lightnets.push_back(
 				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
     }
