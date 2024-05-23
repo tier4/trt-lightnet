@@ -372,7 +372,7 @@ namespace tensorrt_lightnet
     // If the data is continuous, we can use it directly. Otherwise, we need to clone it for contiguous memory.
     input_h_ = nchw_images.isContinuous() ? nchw_images.reshape(1, nchw_images.total()) : nchw_images.reshape(1, nchw_images.total()).clone();
     // Ensure the input device buffer is allocated with the correct size and copy the data.
-    CHECK_CUDA_ERROR(cudaMemcpy(input_d_.get(), input_h_.data(), input_h_.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(input_d_.get(), input_h_.data(), input_h_.size() * sizeof(float), cudaMemcpyHostToDevice, *stream_));    
   }
 
   /**
