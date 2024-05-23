@@ -229,6 +229,11 @@ bool TrtCommon::loadEngine(const std::string & engine_file_path)
   std::stringstream engine_buffer;
   engine_buffer << engine_file.rdbuf();
   std::string engine_str = engine_buffer.str();
+#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8600
+  if (!runtime_->getEngineHostCodeAllowed()) {
+    runtime_->setEngineHostCodeAllowed(true);
+  }
+#endif  
   engine_ = TrtUniquePtr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(
     reinterpret_cast<const void *>(engine_str.data()), engine_str.size()));
   return true;
@@ -512,6 +517,11 @@ bool TrtCommon::buildEngineFromOnnx(
     config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kVERBOSE);
 #endif
   }
+
+#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8600
+  config->setFlag(nvinfer1::BuilderFlag::kVERSION_COMPATIBLE);
+  config->setHardwareCompatibilityLevel(nvinfer1::HardwareCompatibilityLevel::kAMPERE_PLUS);
+#endif
 
 #if TENSORRT_VERSION_MAJOR >= 8
   auto plan =
