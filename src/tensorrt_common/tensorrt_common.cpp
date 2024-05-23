@@ -406,7 +406,7 @@ bool TrtCommon::buildEngineFromOnnx(
   bool last = build_config_->quantize_last_layer;
   // Partial Quantization
   if (precision_ == "int8") {
-    network->getInput(0)->setDynamicRange(0, 255.0);
+    network->getInput(0)->setDynamicRange(0, 1.0);    
     for (int i = 0; i < num; i++) {
       nvinfer1::ILayer * layer = network->getLayer(i);
       auto layer_type = layer->getType();
