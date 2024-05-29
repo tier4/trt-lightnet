@@ -183,12 +183,17 @@ void TrtCommon::setup()
 
     // Output Network Information
     printNetworkInfo(model_file_path_);
-
+    bool is_loadable_engine = false;
     if (fs::exists(cache_engine_path)) {
       std::cout << "Loading... " << cache_engine_path << std::endl;
-      loadEngine(cache_engine_path);
+     is_loadable_engine  = loadEngine(cache_engine_path);
+      if (!is_loadable_engine) {
+	std::cout << "Rebuild... " << cache_engine_path << std::endl;
+      }
     } else {
       std::cout << "Building... " << cache_engine_path << std::endl;
+    }      
+    if (!is_loadable_engine) {
       logger_.log(nvinfer1::ILogger::Severity::kINFO, "Start build engine");
       buildEngineFromOnnx(model_file_path_, cache_engine_path);
       logger_.log(nvinfer1::ILogger::Severity::kINFO, "End build engine");
@@ -233,10 +238,14 @@ bool TrtCommon::loadEngine(const std::string & engine_file_path)
   if (!runtime_->getEngineHostCodeAllowed()) {
     runtime_->setEngineHostCodeAllowed(true);
   }
-#endif  
+#endif
   engine_ = TrtUniquePtr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(
     reinterpret_cast<const void *>(engine_str.data()), engine_str.size()));
-  return true;
+  if (engine_.get()) {
+    return true;
+  } else {
+    return false;
+  }
 }
 
 void TrtCommon::printNetworkInfo(const std::string & onnx_file_path)
@@ -518,9 +527,22 @@ bool TrtCommon::buildEngineFromOnnx(
 #endif
   }
 
+  int device_count;
+  cudaError_t err = cudaGetDeviceCount(&device_count);
+  cudaDeviceProp device_prop;
+  bool isAmperePlus = false;
+  for (int id = 0; id < device_count; id++) {
+    err = cudaGetDeviceProperties(&device_prop, id);
+    if (device_prop.major >= 8) {
+      isAmperePlus = true; 
+    }
+  }
+  
 #if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8600
-  config->setFlag(nvinfer1::BuilderFlag::kVERSION_COMPATIBLE);
-  config->setHardwareCompatibilityLevel(nvinfer1::HardwareCompatibilityLevel::kAMPERE_PLUS);
+  if (isAmperePlus) {
+    config->setFlag(nvinfer1::BuilderFlag::kVERSION_COMPATIBLE);
+    config->setHardwareCompatibilityLevel(nvinfer1::HardwareCompatibilityLevel::kAMPERE_PLUS);
+  }
 #endif
 
 #if TENSORRT_VERSION_MAJOR >= 8
