@@ -489,6 +489,14 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * Apply NMS for subnet BBox
+   */
+  void TrtLightnet::doNonMaximumSuppressionForSubnetBbox()
+  {
+    subnet_bbox_ = nonMaximumSuppression(nms_threshold_, subnet_bbox_);
+  }
+
+  /**
    * Returns the list of bounding boxes detected by the subnet.
    * 
    * @return A vector of BBoxInfo containing the bounding boxes detected by the subnet.
@@ -671,7 +679,7 @@ namespace tensorrt_lightnet
       for (auto& j : out) {
 	if (keep) {
 	  float overlap = computeIoU(i.box, j.box);
-	  keep = overlap <= nmsThresh;
+	  keep = overlap <= nmsThresh;	  
 	} else {
 	  break;
 	}

@@ -299,3 +299,5 @@ get_debug_tensors(void);
 bool
 get_save_debug_tensors(void);
 
+int
+get_workers(void);

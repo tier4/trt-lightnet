@@ -333,6 +333,12 @@ public:
    */  
   void appendSubnetBbox(std::vector<BBoxInfo> bb);
 
+
+  /**
+   * Apply NMS for subnet BBox
+   */
+  void doNonMaximumSuppressionForSubnetBbox();
+  
   /**
    * Returns the list of bounding boxes detected by the subnet.
    * 

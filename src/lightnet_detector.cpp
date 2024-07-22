@@ -26,7 +26,6 @@
 #include <omp.h>
 #include <config_parser.h>
 #include <cnpy.h>
-//#include "cnpy.h"
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -195,7 +194,9 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
   
   for (int p = 0; p < numWorks; p++) {
     trt_lightnet->appendSubnetBbox(tmpBbox[p]);
-  }  
+  }
+
+  trt_lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
 
 /**
@@ -448,12 +449,12 @@ saveDebugTensors(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, s
     //NCHW
     int w = dim_infos[d].d[3];
     int h = dim_infos[d].d[2];
-    /*
+
     for (int c = 0; c < (int)dim_infos[d].d[1]; c++) {
       cv::Mat debug = visualizeFeaturemap(&((debug_tensors[d])[h * w * c]), w, h);
       cv::imshow("debug_"+std::to_string(d)+"_"+std::to_string(c), debug);
     }
-    */
+
     cnpy::npz_save(p.string(), names[d], debug_tensors[d], {(long unsigned int)dim_infos[d].d[1], (long unsigned int)h, (long unsigned int)w}, "a");
   }
 }
@@ -550,7 +551,7 @@ main(int argc, char* argv[])
   VisualizationConfig subnet_visualization_config;
   std::vector<std::string> target;
   std::vector<std::string> bluron = get_bluron_names();
-  int numWorks = omp_get_max_threads();
+  int numWorks = get_workers();//omp_get_max_threads();
   if (get_subnet_onnx_path() != "not-specified") {
     ModelConfig subnet_model_config = {
       .model_path = get_subnet_onnx_path(),
@@ -581,7 +582,8 @@ main(int argc, char* argv[])
   if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
       std::cout << "Inference from " << file.path() << std::endl;
-      cv::Mat image = cv::imread(file.path(), cv::IMREAD_UNCHANGED);
+      //cv::Mat image = cv::imread(file.path(), cv::IMREAD_UNCHANGED);
+      cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
       inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
 
       if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
@@ -590,8 +592,8 @@ main(int argc, char* argv[])
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
 	}
       }
-      
-      if (!visualization_config.dont_show) {
+      //if (1) {      
+      if (!visualization_config.dont_show) {      
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
@@ -600,7 +602,7 @@ main(int argc, char* argv[])
       if (path_config.flg_save) {
 	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, file.path().filename());
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	  //	  savePrediction(subnet_trt_lightnet, subnet_visualization_config.names, path_config.save_path, file.path().filename(), "subnet_predictions");
+	  //savePrediction(subnet_trt_lightnets, subnet_visualization_config.names, path_config.save_path, file.path().filename(), "subnet_predictions");
 	}
       }
       if (path_config.flg_save_debug_tensors && path_config.save_path != "") {
@@ -636,7 +638,7 @@ main(int argc, char* argv[])
 	  //applyPixelationObjectFromSubnetBbox(trt_lightnet, image);
 	}
       }
-      
+      //if (1) {
       if (!visualization_config.dont_show) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {

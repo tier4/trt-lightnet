@@ -132,6 +132,9 @@ DEFINE_string(debug_tensors, "not-specified",
 DEFINE_bool(save_debug_tensors, false,
               "save debug tensors");
 
+
+DEFINE_uint64(workers, 1, "[OPTIONAL] number of workers for subnet processing");
+
 std::string
 get_onnx_path(void)
 {
@@ -593,4 +596,11 @@ bool
 get_save_debug_tensors(void)
 {
   return FLAGS_save_debug_tensors;
+}
+
+
+int
+get_workers(void)
+{
+  return FLAGS_workers;
 }
