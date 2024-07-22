@@ -22,4 +22,3 @@ api/
 *.pt
 .ipynb_checkpoints
 *.idea
-Dockerfile
