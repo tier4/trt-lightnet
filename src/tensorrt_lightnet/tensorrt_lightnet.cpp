@@ -39,7 +39,7 @@ SOFTWARE.
 
 #include "cuda_utils/cuda_check_error.hpp"
 #include "cuda_utils/cuda_unique_ptr.hpp"
-
+#include <tensorrt_lightnet/colormap.hpp>
 #include <tensorrt_lightnet/calibrator.hpp>
 #include <tensorrt_lightnet/preprocess.hpp>
 #include <tensorrt_lightnet/tensorrt_lightnet.hpp>
@@ -562,7 +562,43 @@ namespace tensorrt_lightnet
   {
     return depthmaps_;
   }
-    
+
+
+  /**
+   * @brief Applies the argmax operation to a given buffer and writes the result into a mask.
+   * 
+   * This function iterates over the height and width of the output, determines the channel with the maximum 
+   * value for each position, and assigns the corresponding color from argmax2bgr to the mask.
+   * 
+   * @param mask The output mask to which the argmax results are written. This is a cv::Mat object with type CV_8UC3.
+   * @param buf The input buffer containing the data in NCHW format (channels, height, width).
+   * @param chan The number of channels in the input buffer.
+   * @param outputH The height of the output.
+   * @param outputW The width of the output.
+   * @param argmax2bgr A vector mapping channel indices to colors (cv::Vec3b) for visualization.
+   */
+  void TrtLightnet::applyArgmax(cv::Mat &mask, const float *buf, const int chan, const int outputH, const int outputW, std::vector<cv::Vec3b> &argmax2bgr)
+  {
+    for (int y = 0; y < outputH; y++) {
+      cv::Vec3b *ptr = mask.ptr<cv::Vec3b>(y);
+      for (int x = 0; x < outputW; x++) {
+	float max = 0.0;
+	int index = 0;
+	for (int c = 0; c < chan; c++) {
+	  //NCHW
+	  float value = buf[c * outputH * outputW + y * outputW + x];
+	  if (max < value) {
+	    max = value;
+	    index = c;
+	  }
+	}
+	ptr[x] = argmax2bgr[index];
+      }
+    }
+
+  }
+
+  
   /**
    * Generates segmentation masks from the network's output using argmax operation results.
    * 
@@ -576,15 +612,15 @@ namespace tensorrt_lightnet
 
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
-      int outputW = dims.d[3];
-      int outputH = dims.d[2];
-      int chan = dims.d[1];
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
       // Identifying tensors by channel size and name for segmentation masks.      
       if (chan_size != chan) {
 	std::string name = trt_common_->getIOTensorName(i);
 	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
 	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
-	  int *buf = (int *)output_h_.at(i-1).get();
+	  const int *buf = (int *)output_h_.at(i-1).get();
 
 	  for (int y = 0; y < outputH; y++) {
 	    int stride = outputW * y;
@@ -596,10 +632,82 @@ namespace tensorrt_lightnet
 	    }
 	  }
 	  masks_.push_back(mask);
+	} else if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
+	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+	  const float *buf = (float *)output_h_.at(i-1).get();
+	  applyArgmax(mask, buf, chan, outputH, outputW, argmax2bgr);
+	  masks_.push_back(mask);
 	}
       }
     }
   }
+
+
+    /**
+     * @brief This function calculates the entropy maps from the softmax output of the network.
+     * It identifies the tensors that are not related to bounding box detections and processes 
+     * the tensors whose names contain "softmax". The function computes the entropy for each 
+     * channel and stores the entropy maps.
+     */    
+  void TrtLightnet::calcEntropyFromSoftmax(void)
+  {
+    // Formula to identify output tensors not related to bounding box detections.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    entropies_.clear();
+    ent_maps_.clear();
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
+	  const float *buf = (float *)output_h_.at(i-1).get();
+	  cv::Mat vis = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	  cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);	  	  
+	  std::vector<float> entropy(chan, 0.0f);
+
+	  for (int y = 0; y < outputH; y++) {
+	    for (int x = 0; x < outputW; x++) {
+	      for (int c = 0; c < chan; c++) {
+		float p = buf[c * outputH * outputW + y * outputW + x];		
+		float ent = -p * log(p + 1e-10);
+		entropy[c] += ent;
+		vis.at<unsigned char>(y, x) += (unsigned char)(255 * ent);
+	      }
+	    }
+	  }
+
+	  for (float &ent : entropy) {
+	    ent /= (outputH * outputW);
+	  }
+
+	  entropies_.push_back(entropy);
+	  for (int y = 0; y < outputH; y++) {
+	    for (int x = 0; x < outputW; x++) {
+	      const auto &color = jet_colormap[255 - vis.at<unsigned char>(y, x)];
+	      ent_map.at<cv::Vec3b>(y, x)[0] = color[0];
+	      ent_map.at<cv::Vec3b>(y, x)[1] = color[1];
+	      ent_map.at<cv::Vec3b>(y, x)[2] = color[2];
+	    }
+	  }
+	  ent_maps_.push_back(ent_map);
+	}
+      }
+    }
+  }
+
+  std::vector<cv::Mat> TrtLightnet::getEntropymaps(void)
+  {
+    return ent_maps_;
+  }
+
+  std::vector<std::vector<float>> TrtLightnet::getEntropies(void)
+  {
+    return entropies_;
+  }  
 
   /**
    * Return mask.

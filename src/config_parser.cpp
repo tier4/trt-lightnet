@@ -135,6 +135,10 @@ DEFINE_bool(save_debug_tensors, false,
 
 DEFINE_uint64(workers, 1, "[OPTIONAL] number of workers for subnet processing");
 
+
+DEFINE_bool(entropy, false,
+            "[OPTIONAL] Flag to calculate entropies from softmax layer for uncertainty estimations");
+
 std::string
 get_onnx_path(void)
 {
@@ -603,4 +607,11 @@ int
 get_workers(void)
 {
   return FLAGS_workers;
+}
+
+
+bool
+get_calc_entropy_flg(void)
+{
+  return FLAGS_entropy;
 }

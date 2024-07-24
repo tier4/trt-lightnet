@@ -301,6 +301,44 @@ public:
   void makeMask(std::vector<cv::Vec3b> &argmax2bgr);
 
   /**
+   * @brief Applies the argmax operation to a given buffer and writes the result into a mask.
+   * 
+   * This function iterates over the height and width of the output, determines the channel with the maximum 
+   * value for each position, and assigns the corresponding color from argmax2bgr to the mask.
+   * 
+   * @param mask The output mask to which the argmax results are written. This is a cv::Mat object with type CV_8UC3.
+   * @param buf The input buffer containing the data in NCHW format (channels, height, width).
+   * @param chan The number of channels in the input buffer.
+   * @param outputH The height of the output.
+   * @param outputW The width of the output.
+   * @param argmax2bgr A vector mapping channel indices to colors (cv::Vec3b) for visualization.
+   */  
+  void applyArgmax(cv::Mat &mask, const float *buf, const int chan, const int outputH, const int outputW, std::vector<cv::Vec3b> &argmax2bgr);
+
+
+  /**
+   * @brief This function calculates the entropy maps from the softmax output of the network.
+   * It identifies the tensors that are not related to bounding box detections and processes 
+   * the tensors whose names contain "softmax". The function computes the entropy for each 
+   * channel and stores the entropy maps.
+   */
+  void calcEntropyFromSoftmax(void);
+
+  /**
+   * @brief This function returns the calculated entropy maps.
+   * 
+   * @return A vector of cv::Mat objects representing the entropy maps.
+   */
+  std::vector<cv::Mat> getEntropymaps(void);
+
+  /**
+   * @brief This function returns the calculated entropies for each channel.
+   * 
+   * @return A vector of vectors, where each inner vector contains the entropies for a particular tensor.
+   */
+  std::vector<std::vector<float>> getEntropies(void);
+  
+  /**
    * Return mask.
    * 
    * @return A vector of OpenCV Mat objects, each representing a mask image where each pixel's color corresponds to its class's color.
@@ -454,6 +492,17 @@ public:
    * Stores bounding boxes detected by the subnet, allowing for specialized processing on selected detections.
    */
   std::vector<BBoxInfo> subnet_bbox_;
+
+
+  /**
+   * Stores entropies, allowing for uncertainty estimation using a single DNN.
+   */  
+  std::vector<std::vector<float>> entropies_;
+
+  /**
+   * Stores entropy maps for visualization
+   */    
+  std::vector<cv::Mat> ent_maps_;  
 };
 
 }  // namespace tensorrt_lightnet

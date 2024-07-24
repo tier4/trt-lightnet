@@ -223,6 +223,13 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
     cv::imshow("depth", depth);
   }
   trt_lightnet->drawBbox(image, bbox, colormap, names);
+
+  if (get_calc_entropy_flg()) {
+    std::vector<cv::Mat> ent_maps = trt_lightnet->getEntropymaps();
+    for (const auto &ent_map : ent_maps) {
+      cv::imshow("entropy", ent_map);
+    }    
+  }
 }
 
 /**
@@ -318,6 +325,38 @@ writePredictions(std::string save_path, std::string filename, std::vector<std::s
   writing_file.close();
 }
 
+
+/**
+ * Writes vectors to a text file within the specified directory.
+ *
+ * @param save_path The path to the directory where the text file will be saved.
+ * @param filename The original filename of the image; used to construct the output text filename.
+ * @param names A vector of strings representing class names corresponding to class IDs.
+ * @param values A vector of floating point values.
+ */
+void
+writeValue(std::string save_path, std::string filename, std::vector<float> &values)
+{
+  int pos = filename.find_last_of(".");
+  std::string body = filename.substr(0, pos);
+  std::string dstName = body + ".txt";
+  std::ofstream writing_file;
+  fs::path p = save_path;
+  fs::create_directory(p);  
+  p.append(dstName);
+  writing_file.open(p.string(), std::ios::out);
+  std::stringstream stream;
+  for (int i = 0; i < (int)values.size(); i++) {
+    if (i == (int)values.size()-1) {
+      stream << std::setprecision(2) << values[i] << "\n";
+    } else {
+      stream << std::setprecision(2) << values[i] << " ";
+    }
+  }
+  writing_file << stream.str();
+  writing_file.close();
+}
+
 /**
  * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
  * data from a TrtLightnet object.
@@ -385,6 +424,26 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
 	cv::resize(depthmaps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
 	saveImage(resized, p.string(), png_name);
       }
+    }
+  }
+  if (get_calc_entropy_flg()) {
+    std::vector<cv::Mat> ent_maps = trt_lightnet->getEntropymaps();
+    std::vector<std::vector<float>> entropies = trt_lightnet->getEntropies();
+    if (ent_maps.size()) {
+      fs::create_directories(fs::path(save_path) / "entropyVisualization");
+      fs::create_directories(fs::path(save_path) / "entropy");      
+    }
+    for (int i = 0; i < (int)ent_maps.size(); i++) {
+      fs::path p = fs::path(save_path) / "entropyVisualization" / std::to_string(i);
+      fs::create_directory(p);    
+      cv::Mat resized;
+      cv::resize(ent_maps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+      saveImage(resized, p.string(), png_name);
+    }
+    for (int i = 0; i < (int)entropies.size(); i++) {    
+      fs::path p = fs::path(save_path) / "entropy" / std::to_string(i);
+      fs::create_directory(p);
+      writeValue(p.string(), filename, entropies[i]);
     }
   }
 }
@@ -592,6 +651,11 @@ main(int argc, char* argv[])
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
 	}
       }
+
+      if (get_calc_entropy_flg()) {
+	trt_lightnet->calcEntropyFromSoftmax();
+      }
+      
       //if (1) {      
       if (!visualization_config.dont_show) {      
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
@@ -638,6 +702,11 @@ main(int argc, char* argv[])
 	  //applyPixelationObjectFromSubnetBbox(trt_lightnet, image);
 	}
       }
+
+      if (get_calc_entropy_flg()) {
+	trt_lightnet->calcEntropyFromSoftmax();
+      }
+      
       //if (1) {
       if (!visualization_config.dont_show) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
@@ -658,6 +727,7 @@ main(int argc, char* argv[])
 	fs::path p = fs::path(path_config.save_path) / "debug_tensors";
 	saveDebugTensors(trt_lightnet, p.string(), name);
       }	
+
       
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {

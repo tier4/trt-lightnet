@@ -301,3 +301,6 @@ get_save_debug_tensors(void);
 
 int
 get_workers(void);
+
+bool
+get_calc_entropy_flg(void);

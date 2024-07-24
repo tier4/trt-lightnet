@@ -345,7 +345,15 @@ void TrtCommon::printNetworkInfo(const std::string & onnx_file_path)
       std::cout << std::endl;
     } else if (layer_type == nvinfer1::LayerType::kRESIZE) {
       std::cout << "L" << i << " [resize]" << std::endl;
-    }
+    } else if (layer_type == nvinfer1::LayerType::kSOFTMAX) {
+      std::cout << "L" << i << " [softmax] "  << dim_in.d[3] << "x" << dim_in.d[2] << "x"
+                << dim_in.d[1] << " -> " << dim_out.d[3] << "x" << dim_out.d[2] << "x"
+                << dim_out.d[1] << std::endl;
+    } else if (layer_type == nvinfer1::LayerType::kTOPK) {
+      std::cout << "L" << i << " [argmax] " << dim_in.d[3] << "x" << dim_in.d[2] << "x"
+                << dim_in.d[1] << " -> " << dim_out.d[3] << "x" << dim_out.d[2] << "x"
+                << dim_out.d[1] << std::endl;
+    }    
   }
   std::cout << "Total " << total_gflops << " GFLOPs" << std::endl;
   std::cout << "Total " << total_params / 1000.0 / 1000.0 << " M params" << std::endl;
