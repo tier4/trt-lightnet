@@ -118,6 +118,8 @@ DEFINE_uint64(subnet_c, 2, "[OPTIONAL] num of classes for the subnet inference e
 DEFINE_string(subnet_rgb, "not-specified",
               "[OPTIONAL] Path to colormap for detections");
 
+DEFINE_double(subnet_thresh, 0.2, "[OPTIONAL] subnet_thresh");
+
 DEFINE_string(target_names, "not-specified",
               "Subnet list of names for detections"
               "Subnet list of names for detections");
@@ -548,6 +550,13 @@ get_subnet_colormap(void)
     }
   }
   return colormap;
+}
+
+
+double
+get_subnet_score_thresh(void)
+{
+  return FLAGS_subnet_thresh;
 }
 
 std::vector<std::string>

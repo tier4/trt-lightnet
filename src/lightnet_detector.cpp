@@ -266,7 +266,9 @@ void blurObjectFromSubnetBbox(std::shared_ptr<tensorrt_lightnet::TrtLightnet> tr
       cv::Rect roi(b.box.x1+w_offset, b.box.y1+h_offset, width-w_offset*2, height-h_offset*2);
       cropped = (image)(roi);
       if (width > 320 && height > 320) {
-	cv::blur(cropped, cropped, cv::Size(kernel*4, kernel*4));
+	cv::blur(cropped, cropped, cv::Size(kernel*16, kernel*16));
+      } else if (width > 160 && height > 160) {
+	cv::blur(cropped, cropped, cv::Size(kernel*8, kernel*8));
       } else {
 	cv::blur(cropped, cropped, cv::Size(kernel, kernel));
       }
@@ -615,7 +617,7 @@ main(int argc, char* argv[])
     ModelConfig subnet_model_config = {
       .model_path = get_subnet_onnx_path(),
       .num_class = get_subnet_classes(),
-      .score_threshold = static_cast<float>(get_score_thresh()),
+      .score_threshold = static_cast<float>(get_subnet_score_thresh()),
       .anchors = get_subnet_anchors(),
       .num_anchors = get_subnet_num_anchors(),
       .nms_threshold = 0.25f // Assuming this value is fixed or retrieved similarly.
@@ -641,7 +643,6 @@ main(int argc, char* argv[])
   if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
       std::cout << "Inference from " << file.path() << std::endl;
-      //cv::Mat image = cv::imread(file.path(), cv::IMREAD_UNCHANGED);
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
       inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
 
@@ -656,7 +657,6 @@ main(int argc, char* argv[])
 	trt_lightnet->calcEntropyFromSoftmax();
       }
       
-      //if (1) {      
       if (!visualization_config.dont_show) {      
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
@@ -707,7 +707,6 @@ main(int argc, char* argv[])
 	trt_lightnet->calcEntropyFromSoftmax();
       }
       
-      //if (1) {
       if (!visualization_config.dont_show) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {

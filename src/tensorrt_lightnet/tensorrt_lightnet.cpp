@@ -57,6 +57,47 @@ SOFTWARE.
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
 
+/**
+ * @brief Draws an arrow on the given image.
+ *
+ * This function draws an arrow from point pt1 to point pt2 with the specified color, thickness, line type, and shift.
+ *
+ * @param image The image on which the arrow will be drawn.
+ * @param pt1 The starting point of the arrow.
+ * @param pt2 The ending point of the arrow.
+ * @param color The color of the arrow.
+ * @param thickness The thickness of the arrow lines. Default value is 1.
+ * @param lineType The type of the arrow lines. Default value is 8 (8-connected line).
+ * @param shift The number of fractional bits in the point coordinates. Default value is 0.
+ */
+inline void arrow(cv::Mat image, cv::Point pt1, cv::Point pt2, cv::Scalar color, int thickness = 1, int lineType = 8, int shift = 0)
+{
+  // Calculate the vector components between pt1 and pt2
+  float vx = (float)(pt2.x - pt1.x);
+  float vy = (float)(pt2.y - pt1.y);
+  float v = sqrt(vx * vx + vy * vy);
+  float ux = vx / v;
+  float uy = vy / v;
+
+  // Arrow parameters
+  float w = 8.0f; // Width of the arrowhead
+  float h = 8.0f; // Height of the arrowhead
+  cv::Point ptl, ptr;
+
+  // Calculate the left side point of the arrowhead
+  ptl.x = (int)((float)pt2.x - uy * w - ux * h);
+  ptl.y = (int)((float)pt2.y + ux * w - uy * h);
+
+  // Calculate the right side point of the arrowhead
+  ptr.x = (int)((float)pt2.x + uy * w - ux * h);
+  ptr.y = (int)((float)pt2.y - ux * w - uy * h);
+
+  // Draw the arrow
+  cv::line(image, pt1, pt2, color, thickness, lineType, shift); // Main line
+  cv::line(image, pt2, ptl, color, thickness, lineType, shift); // Left side of the arrowhead
+  cv::line(image, pt2, ptr, color, thickness, lineType, shift); // Right side of the arrowhead
+}
+
 namespace
 {
   /**
@@ -428,8 +469,38 @@ namespace tensorrt_lightnet
       } else {
 	stream << std::fixed << std::setprecision(2) << "id:" << id << "  score:" << bbi.prob;
       }
-
+      
       cv::Scalar color = colormap.empty() ? cv::Scalar(255, 0, 0) : cv::Scalar(colormap[id][2], colormap[id][1], colormap[id][0]);
+      
+      if (bbi.isHierarchical) {
+	std::string c_name;
+	if (bbi.subClassId == 0) {
+	  color = cv::Scalar(0, 255, TLR_GREEN);
+	} else if (bbi.subClassId == TLR_YELLOW) {
+	  color = cv::Scalar(0, 255, 255);
+	} else {
+	  color = cv::Scalar(0, 0, 255);
+	}
+	if (names[id] == "arrow") {
+	  float sin = bbi.sin;
+	  float cos = bbi.cos;
+	  float deg = atan2(sin, cos) * 180.0 / M_PI;
+	  std::stringstream stream_TLR;
+	  stream_TLR <<  std::fixed << std::setprecision(2) << int(deg);
+	  int xlen = bbi.box.x2 - bbi.box.x1;
+	  int xcenter = (bbi.box.x2 + bbi.box.x1)/2;
+	  int ycenter = (bbi.box.y2 + bbi.box.y1)/2;	  
+	  int xr  = xcenter+(int)(sin * xlen/2);
+	  int yr  = ycenter-(int)(cos * xlen/2);
+	  if (xlen > 12) {
+	    if (bbi.subClassId == 0) {
+	      int y_offset = 0;
+	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/8);
+	    }
+	  }
+	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 16), 0, 0.5, color, 1);	  
+	}
+      }
       cv::rectangle(img, cv::Point(bbi.box.x1, bbi.box.y1), cv::Point(bbi.box.x2, bbi.box.y2), color, 2);
       cv::putText(img, stream.str(), cv::Point(bbi.box.x1, bbi.box.y1 - 5), 0, 0.5, color, 1);
     }
@@ -449,6 +520,8 @@ namespace tensorrt_lightnet
     int inputH = inputDims.d[2];
     // Channel size formula to identify relevant tensor outputs for bounding boxes.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    int tlr_size = (4 + 1 + num_class_ + 3 + 2) * num_anchor_;
+
     int detection_count = 0;
     for (int i = 0; i < trt_common_->getNbBindings(); i++) {
       if (trt_common_->bindingIsInput(i)) {
@@ -461,6 +534,11 @@ namespace tensorrt_lightnet
 
       if (chan_size == chan) { // Filtering out the tensors that match the channel size for detections.
 	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, output_h_.at(i-1).get(), gridW, gridH);
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
+      } else if (tlr_size == chan) {
+	//Decode TLR Tensor
+	std::vector<BBoxInfo> b = decodeTLRTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, output_h_.at(i-1).get(), gridW, gridH);
 	bbox_.insert(bbox_.end(), b.begin(), b.end());
 	detection_count++;
       }
@@ -609,6 +687,7 @@ namespace tensorrt_lightnet
     masks_.clear();
     // Formula to identify output tensors not related to bounding box detections.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    
 
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -901,10 +980,11 @@ namespace tensorrt_lightnet
     bbi.label = maxIndex;
     bbi.prob = maxProb;
     bbi.classId = maxIndex; // Note: 'label' and 'classId' are set to the same value. Consider if this redundancy is necessary.
-
+    bbi.isHierarchical = false;
     // Add the box info to the vector
     binfo.push_back(bbi);
   }
+  
 
   /**
    * Decodes the output tensor from a neural network into bounding box information.
@@ -981,5 +1061,150 @@ namespace tensorrt_lightnet
       }
     }
     return binfo;
-  }  
+  }
+
+
+  /**
+   * Adds a bounding box proposal for TLR after converting its dimensions and scaling it relative to the original image size.
+   * 
+   * @param bx Center X coordinate of the bounding box proposal.
+   * @param by Center Y coordinate of the bounding box proposal.
+   * @param bw Width of the bounding box proposal.
+   * @param bh Height of the bounding box proposal.
+   * @param stride_h_ Vertical stride of the feature map.
+   * @param stride_w_ Horizontal stride of the feature map.
+   * @param maxIndex The class index with the highest probability.
+   * @param maxProb The probability of the most likely class.
+   * @param maxSubIndex The subclass index with the highest probability.
+   * @param cos Cos value for angle (This value in only used for arrow type)
+   * @param sin Sin value for angle (This value in only used for arrow type)
+   * @param image_w Width of the original image.
+   * @param image_h Height of the original image.
+   * @param input_w Width of the network input.
+   * @param input_h Height of the network input.
+   * @param binfo Vector to which the new BBoxInfo object will be added.
+   */
+  void TrtLightnet::addTLRBboxProposal(const float bx, const float by, const float bw, const float bh,
+						const uint32_t stride_h_, const uint32_t stride_w_, const int maxIndex, const float maxProb, const int maxSubIndex,
+						const float cos, const float sin,
+				    const uint32_t image_w, const uint32_t image_h,
+				    const uint32_t input_w, const uint32_t input_h, std::vector<BBoxInfo>& binfo)
+  {
+    BBoxInfo bbi;
+    // Convert the bounding box to the original image scale
+    bbi.box = convertBboxRes(bx, by, bw, bh, stride_h_, stride_w_, input_w, input_h);
+
+    // Skip invalid boxes
+    if (bbi.box.x1 > bbi.box.x2 || bbi.box.y1 > bbi.box.y2) {
+      return;
+    }
+
+    // Scale box coordinates to match the size of the original image
+    bbi.box.x1 = (bbi.box.x1 / input_w) * image_w;
+    bbi.box.y1 = (bbi.box.y1 / input_h) * image_h;
+    bbi.box.x2 = (bbi.box.x2 / input_w) * image_w;
+    bbi.box.y2 = (bbi.box.y2 / input_h) * image_h;
+
+    // Set label and probability
+    bbi.label = maxIndex;
+    bbi.prob = maxProb;
+    bbi.classId = maxIndex; // Note: 'label' and 'classId' are set to the same value. Consider if this redundancy is necessary.
+
+    // Add the box info to the vector
+    bbi.isHierarchical = true;
+    bbi.subClassId = maxSubIndex;
+    bbi.cos = cos;
+    bbi.sin = sin;
+    binfo.push_back(bbi);
+  }
+
+
+  /**
+   * Decodes the output tensor from a neural network into bounding box information.
+   * This implementation specifically handles tensors formatted for Scaled-YOLOv4 detections.
+   *
+   * @param imageIdx The index of the image within the batch being processed.
+   * @param imageH The height of the input image.
+   * @param imageW The width of the input image.
+   * @param inputH The height of the network input.
+   * @param inputW The width of the network input.
+   * @param anchor Pointer to the anchor sizes used by the network.
+   * @param anchor_num The number of anchors.
+   * @param output Pointer to the output data from the network.
+   * @param gridW The width of the grid used by the network for detections.
+   * @param gridH The height of the grid used by the network for detections.
+   * @return A vector of BBoxInfo containing decoded bounding box information.
+   */
+  std::vector<BBoxInfo> TrtLightnet::decodeTLRTensor(const int imageIdx, const int imageH, const int imageW,  const int inputH, const int inputW, const int *anchor, const int anchor_num, const float *output, const int gridW, const int gridH)
+  {
+    //  {bbox}    {obj}  {color}        {type}           {angle}
+    // {0 1 2 3}   {4}   {5 6 7}    {8 9 10 11 12 13}    {14 15}
+    const int volume = gridW * gridH;
+    const float* detections = &output[imageIdx * volume * anchor_num * (5 + 3 + num_class_ + 2)];
+    
+    std::vector<BBoxInfo> binfo;
+    const float scale_x_y = 2.0; // Scale factor used for bounding box center adjustments.
+    const float offset = 0.5 * (scale_x_y - 1.0); // Offset for scaled centers.
+
+    for (int y = 0; y < gridH; ++y) {
+      for (int x = 0; x < gridW; ++x) {
+	for (int b = 0; b < anchor_num; ++b) {
+	  const int numGridCells = gridH * gridW;
+	  const int bbindex = (y * gridW + x) + numGridCells * b * (5 + 3 + num_class_ + 2);
+
+	  const float objectness = detections[bbindex + 4 * numGridCells]; // Objectness score.
+	  if (objectness < score_threshold_) {
+	    continue; // Skip detection if below threshold.
+	  }
+
+	  // Extract anchor dimensions.
+	  const float pw = static_cast<float>(anchor[b * 2]);
+	  const float ph = static_cast<float>(anchor[b * 2 + 1]);
+
+	  // Decode bounding box center and dimensions.
+	  // Scaled-YOLOv4 format for simple and fast decorder
+	  // bx = tx * 2 + cx - 0.5
+	  // by = ty * 2 + cy - 0.5
+	  // bw = (tw * 2) * (tw * 2) * pw
+	  // bh = (th * 2) * (th * 2) * pw
+	  // The sigmoid is included in the last layer of the DNN models.
+	  // Cite in https://alexeyab84.medium.com/scaled-yolo-v4-is-the-best-neural-network-for-object-detection-on-ms-coco-dataset-39dfa22fa982 (Loss for YOLOv3, YOLOv4 and Scaled-YOLOv4)
+	  const float bx = x + scale_x_y * detections[bbindex + X_INDEX * numGridCells] - offset;
+	  const float by = y + scale_x_y * detections[bbindex + Y_INDEX * numGridCells] - offset;
+	  const float bw = pw * std::pow(detections[bbindex + W_INDEX * numGridCells] * 2, 2);
+	  const float bh = ph * std::pow(detections[bbindex + H_INDEX * numGridCells] * 2, 2);
+
+	  // Decode class probabilities.
+	  float maxProb = 0.0f;
+	  int maxIndex = -1;
+	  for (int i = 0; i < num_class_; ++i) {
+	    float prob = detections[bbindex + (5 + 3 + i) * numGridCells];
+	    if (prob > maxProb) {
+	      maxProb = prob;
+	      maxIndex = i;
+	    }
+	  }
+	  float maxSubProb = 0.0f;
+	  int maxSubIndex = -1;
+	  for (int i = 0; i < 3; ++i) {
+	    float prob = detections[bbindex + (5+i) * numGridCells];
+	    if (prob > maxSubProb) {
+	      maxSubProb = prob;
+	      maxSubIndex = i;
+	    }
+	  }
+	  maxProb *= objectness; // Adjust probability with objectness score.
+	  float cos = detections[bbindex + COS_INDEX * numGridCells];
+	  float sin = detections[bbindex + SIN_INDEX * numGridCells];
+	  // Add bounding box proposal if above the threshold.
+	  if (maxProb > score_threshold_) {
+	    const uint32_t strideH = inputH / gridH;
+	    const uint32_t strideW = inputW / gridW;
+	    addTLRBboxProposal(bx, by, bw, bh, strideH, strideW, maxIndex, maxProb, maxSubIndex, cos, sin, imageW, imageH, inputW, inputH, binfo);
+	  }
+	}
+      }
+    }
+    return binfo;
+  }
 }  // namespace tensorrt_lightnet

@@ -266,6 +266,15 @@ std::vector<int> get_subnet_anchors(void);
 int get_subnet_classes(void);
 
 /**
+ * Retrieves threshold by the subnet.
+ *
+ * @return value of threshold.
+ */
+double
+get_subnet_score_thresh(void);
+
+
+/**
  * Retrieves the color map for the subnet visualization.
  *
  * @return A 2D vector with RGB values for each class.

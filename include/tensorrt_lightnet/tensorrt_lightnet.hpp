@@ -26,6 +26,36 @@
 #include <vector>
 #include <NvInfer.h>
 
+
+enum TLR_Color {
+  TLR_GREEN = 0,
+  TLR_YELLOW = 1,
+  TLR_RED = 2,
+};
+
+/**
+ *  Tensor Index for TLR
+ */
+enum TLR_Index {
+  X_INDEX = 0, //bbox
+  Y_INDEX = 1, //bbox
+  W_INDEX = 2, //bbox
+  H_INDEX = 3, //bbox
+  OBJ_INDEX = 4, //confidence
+  R_INDEX = 5, //color
+  G_INDEX = 6, //color
+  B_INDEX = 7, //color
+  CIRCLE_INDEX = 8, //typ
+  ARROW_INDEX = 9, //type
+  UTURN_INDEX = 10, //typ
+  PED_INDEX = 11, //type
+  NUM_INDEX = 12, //type
+  CROSS_INDEX = 13, //type
+  COS_INDEX = 14, //angle
+  SIN_INDEX = 15, //angle
+};
+
+
 /**
  * Configuration settings related to the model being used for inference.
  * Includes paths, classification thresholds, and anchor configurations.
@@ -102,6 +132,10 @@ namespace tensorrt_lightnet
     int label; ///< Label of the detected object.
     int classId; ///< Class ID of the detected object.
     float prob; ///< Probability of the detection.
+    bool isHierarchical;
+    int subClassId;
+    float sin;
+    float cos;
   };
 
   /**
@@ -209,6 +243,34 @@ public:
    */
   std::vector<BBoxInfo> decodeTensor(const int imageIdx, const int imageH, const int imageW, const int inputH, const int inputW, const int *anchor, const int anchor_num, const float *output, const int gridW, const int gridH);
 
+  /**
+   * Adds a bounding box proposal for TLR after converting its dimensions and scaling it relative to the original image size.
+   *
+   * @param bx Center X coordinate of the bounding box proposal.
+   * @param by Center Y coordinate of the bounding box proposal.
+   * @param bw Width of the bounding box proposal.
+   * @param bh Height of the bounding box proposal.
+   * @param stride_h_ Vertical stride of the feature map.
+   * @param stride_w_ Horizontal stride of the feature map.
+   * @param maxIndex The class index with the highest probability.
+   * @param maxProb The probability of the most likely class.
+   * @param maxSubIndex The subclass index with the highest probability.
+   * @param cos Cos value for angle (This value in only used for arrow type)
+   * @param sin Sin value for angle (This value in only used for arrow type)
+   * @param image_w Width of the original image.
+   * @param image_h Height of the original image.
+   * @param input_w Width of the network input.
+   * @param input_h Height of the network input.
+   * @param binfo Vector to which the new BBoxInfo object will be added.
+   */
+  void addTLRBboxProposal(const float bx, const float by, const float bw, const float bh,
+						const uint32_t stride_h_, const uint32_t stride_w_, const int maxIndex, const float maxProb, const int maxSubIndex,
+				   const float cos, const float sin,
+				    const uint32_t image_w, const uint32_t image_h,
+				   const uint32_t input_w, const uint32_t input_h, std::vector<BBoxInfo>& binfo);
+  
+  std::vector<BBoxInfo> decodeTLRTensor(const int imageIdx, const int imageH, const int imageW,  const int inputH, const int inputW, const int *anchor, const int anchor_num, const float *output, const int gridW, const int gridH);
+  
   /**
    * Applies non-maximum suppression to filter overlapping bounding boxes.
    * @param nmsThresh threshold for suppression.
