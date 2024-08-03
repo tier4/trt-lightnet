@@ -510,10 +510,11 @@ saveDebugTensors(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, s
     //NCHW
     int w = dim_infos[d].d[3];
     int h = dim_infos[d].d[2];
-
-    for (int c = 0; c < (int)dim_infos[d].d[1]; c++) {
-      cv::Mat debug = visualizeFeaturemap(&((debug_tensors[d])[h * w * c]), w, h);
-      cv::imshow("debug_"+std::to_string(d)+"_"+std::to_string(c), debug);
+    if (!is_dont_show()) {
+      for (int c = 0; c < (int)dim_infos[d].d[1]; c++) {
+	cv::Mat debug = visualizeFeaturemap(&((debug_tensors[d])[h * w * c]), w, h);
+	cv::imshow("debug_"+std::to_string(d)+"_"+std::to_string(c), debug);
+      }
     }
 
     cnpy::npz_save(p.string(), names[d], debug_tensors[d], {(long unsigned int)dim_infos[d].d[1], (long unsigned int)h, (long unsigned int)w}, "a");
