@@ -1,0 +1,17 @@
+id,name,r,g,b
+0,others,0,0,0
+1,obstacle,255,70,255
+2,car,0,0,142
+3,bike,60,20,2220
+4,person,220,20,60
+5,arrow,0,230,0
+6,traffic_light,250,170,30
+7,traffic_sign,220,220,0
+8,road,128,64,128
+9,sidewalk,244,35,232
+10,lane,255,255,255
+11,crosswalk,128,0,128
+12,road_paint,128,32,32
+13,building,100,100,100
+14,vegetation,147,253,194
+15,sky,135,206,255
