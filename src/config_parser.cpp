@@ -60,6 +60,8 @@ DEFINE_string(names, "../data/t4.names",
 
 DEFINE_double(thresh, 0.2, "[OPTIONAL] thresh");
 
+DEFINE_double(nms_thresh, 0.45, "[OPTIONAL] nms_thresh");
+
 
 DEFINE_double(scale, 1.0, "[OPTIONAL] scale");
 
@@ -389,6 +391,12 @@ double
 get_score_thresh(void)
 {
   return FLAGS_thresh;
+}
+
+double
+get_nms_thresh(void)
+{
+  return FLAGS_nms_thresh;
 }
 
   

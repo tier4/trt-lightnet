@@ -320,8 +320,14 @@ writePredictions(std::string save_path, std::string filename, std::vector<std::s
   p.append(dstName);
   writing_file.open(p.string(), std::ios::out);
   for (const auto& bbi : bbox) {
-    int id = bbi.classId;
-    std::string writing_text = format("%s %f %d %d %d %d", names[id].c_str(), (float)bbi.prob, (int)bbi.box.x1, (int)bbi.box.y1, (int)bbi.box.x2, (int)bbi.box.y2);
+    int id = bbi.classId;    
+    std::string writing_text;
+    if (!bbi.isHierarchical) {
+      writing_text = format("%s %f %d %d %d %d", names[id].c_str(), (float)bbi.prob, (int)bbi.box.x1, (int)bbi.box.y1, (int)bbi.box.x2, (int)bbi.box.y2);
+    } else {
+      //For TLR
+      writing_text = tensorrt_lightnet::getTLRStringFromBBox(bbi, names);
+    }
     writing_file << writing_text << std::endl;
   }
   writing_file.close();
@@ -554,7 +560,7 @@ main(int argc, char* argv[])
     .score_threshold = static_cast<float>(get_score_thresh()),
     .anchors = get_anchors(),
     .num_anchors = get_num_anchors(),
-    .nms_threshold = 0.45f, // Assuming this value is fixed or retrieved similarly.
+    .nms_threshold = static_cast<float>(get_nms_thresh()),
   };
 
   InferenceConfig inference_config = {

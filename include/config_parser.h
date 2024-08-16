@@ -132,6 +132,13 @@ std::vector<std::string> get_names(void);
 double get_score_thresh(void);
 
 /**
+ * Retrieves the threshold for NMS.
+ *
+ * @return The threshold value as a double.
+ */
+double get_nms_thresh(void);
+
+/**
  * Checks if CUDA acceleration is enabled.
  *
  * @return True if CUDA is enabled, false otherwise.

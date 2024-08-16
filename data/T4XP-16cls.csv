@@ -12,6 +12,6 @@ id,name,r,g,b
 10,lane,255,255,255
 11,crosswalk,128,0,128
 12,road_paint,128,32,32
-13,building,100,100,100
+13,building,100,100,200
 14,vegetation,147,253,194
 15,sky,135,206,255

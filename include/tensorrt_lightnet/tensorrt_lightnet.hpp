@@ -138,6 +138,36 @@ namespace tensorrt_lightnet
     float cos;
   };
 
+  template <typename ... Args>
+  static std::string format(const std::string& fmt, Args ... args )
+  {
+    size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
+    std::vector<char> buf(len + 1);
+    std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
+    return std::string(&buf[0], &buf[0] + len);
+  }
+  
+  inline std::string getTLRStringFromBBox(BBoxInfo bbi, std::vector<std::string> &names)
+  {
+    std::string c_str = "";
+    float deg = -360.0;
+    if (bbi.subClassId == TLR_GREEN) {
+      c_str = "green";
+    } else if (bbi.subClassId == TLR_YELLOW) {
+      c_str = "yellow";
+    } else {
+      c_str = "red";
+    }
+    if (names[bbi.classId] == "arrow") {
+      float sin = bbi.sin;
+      float cos = bbi.cos;
+      deg = atan2(sin, cos) * 180.0 / M_PI;
+    }
+    std::string str = format("%s %f %d %d %d %d %s %f", c_str.c_str(), (float)bbi.prob, (int)bbi.box.x1, (int)bbi.box.y1, (int)bbi.box.x2, (int)bbi.box.y2, names[bbi.classId].c_str(), deg);
+    return str;
+  }
+
+  
   /**
    * Represents a colormap entry, including an ID, a name, and a color.
    * This is used for mapping class IDs to human-readable names and visual representation colors.
