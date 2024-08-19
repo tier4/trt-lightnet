@@ -1,0 +1,9 @@
+id,name,r,g,b
+0,others,0,0,0
+1,obstacle,0,255,0
+2,vehicle,0,0,142
+3,bike,60,20,220
+4,person,220,20,60
+5,road,128,64,128
+6,building,100,100,200
+7,sky,147,253,194
