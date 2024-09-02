@@ -536,7 +536,7 @@ bool TrtCommon::buildEngineFromOnnx(
   }
 
   int device_count;
-  cudaError_t err = cudaGetDeviceCount(&device_count);
+  cudaError_t err;
   cudaDeviceProp device_prop;
   bool isAmperePlus = false;
   for (int id = 0; id < device_count; id++) {

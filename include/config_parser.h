@@ -320,3 +320,15 @@ get_workers(void);
 
 bool
 get_calc_entropy_flg(void);
+
+std::string
+get_depth_format(void);
+
+float
+get_fx(void);
+
+float
+get_fy(void);
+
+float
+get_max_distance(void);

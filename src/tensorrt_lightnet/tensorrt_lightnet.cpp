@@ -56,6 +56,9 @@ SOFTWARE.
 #include <iostream>
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
+extern const unsigned char jet_colormap[256][3];
+extern const unsigned char magma_colormap[256][3];
+
 
 /**
  * @brief Draws an arrow on the given image.
@@ -405,10 +408,21 @@ namespace tensorrt_lightnet
     trt_common_->setBindingDimensions(0, input_dims); // Update dimensions with the new batch size.
     const float inputH = static_cast<float>(input_dims.d[2]);
     const float inputW = static_cast<float>(input_dims.d[3]);
-
+    const float inputC = static_cast<float>(input_dims.d[1]);
+    std::vector<cv::Mat>  src;
+    if (inputC == 1) {
+      for (int b = 0; b < (int)batch_size; b++) {
+	cv::Mat gray;
+	cv::cvtColor(images[b], gray, cv::COLOR_BGR2GRAY);
+	src.push_back(gray);
+      }
+    } else {
+      src = images;
+    }
+    
     // Normalize images and convert to blob directly without additional copying.
     float scale = 1 / 255.0;
-    const auto nchw_images = cv::dnn::blobFromImages(images, scale, cv::Size(inputW, inputH), cv::Scalar(0.0, 0.0, 0.0), true);   
+    const auto nchw_images = cv::dnn::blobFromImages(src, scale, cv::Size(inputW, inputH), cv::Scalar(0.0, 0.0, 0.0), true);   
 
     // If the data is continuous, we can use it directly. Otherwise, we need to clone it for contiguous memory.
     input_h_ = nchw_images.isContinuous() ? nchw_images.reshape(1, nchw_images.total()) : nchw_images.reshape(1, nchw_images.total()).clone();
@@ -501,7 +515,7 @@ namespace tensorrt_lightnet
 	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 16), 0, 0.5, color, 1);	  
 	}
       }
-      cv::rectangle(img, cv::Point(bbi.box.x1, bbi.box.y1), cv::Point(bbi.box.x2, bbi.box.y2), color, 2);
+      cv::rectangle(img, cv::Point(bbi.box.x1, bbi.box.y1), cv::Point(bbi.box.x2, bbi.box.y2), color, 4);
       cv::putText(img, stream.str(), cv::Point(bbi.box.x1, bbi.box.y1 - 5), 0, 0.5, color, 1);
     }
   }
@@ -595,42 +609,159 @@ namespace tensorrt_lightnet
   }
 
   /**
-   * Generates depth maps from the network's output tensors that are not related to bounding box detections.
-   * The method identifies specific tensors for depth map generation based on channel size and name.
+   * @brief Generates depth maps from the output tensors of the TensorRT model.
+   *
+   * This function processes the output tensors from the TensorRT model to generate depth maps.
+   * The depth maps are stored in the `depthmaps_` vector. The format of the depth maps can either 
+   * be grayscale (CV_8UC1) or a 3-channel color map (CV_8UC3) using the "magma" colormap.
+   *
+   * @param depth_format Specifies the format of the depth map. If "magma" is specified, the depth 
+   * maps will be in color; otherwise, they will be in grayscale.
    */
-  void TrtLightnet::makeDepthmap(void)
+  void TrtLightnet::makeDepthmap(std::string &depth_format)
   {
-    depthmaps_.clear();
+    depthmaps_.clear();  // Clear any existing depth maps.
+
     // Formula to identify output tensors not related to bounding box detections.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify depth map tensors by checking the channel size and tensor name.
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  cv::Mat depthmap;
+
+	  // Initialize depth map with appropriate format (color or grayscale).
+	  if (depth_format == "magma") {
+	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+	  } else {
+	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	  }
+
+	  float *buf = (float *)output_h_.at(i-1).get();
+
+	  // Populate the depth map with the processed depth values.
+	  for (int y = 0; y < outputH; y++) {
+	    int stride = outputW * y;
+
+	    for (int x = 0; x < outputW; x++) {
+	      float rel = 1.0f - buf[stride + x];  // Invert the depth value.
+	      int value = static_cast<int>(rel * 255);  // Scale to 8-bit value.
+
+	      if (depth_format == "magma") {
+		// Apply the "magma" colormap.
+		depthmap.at<cv::Vec3b>(y, x)[0] = magma_colormap[255 - value][2];
+		depthmap.at<cv::Vec3b>(y, x)[1] = magma_colormap[255 - value][1];
+		depthmap.at<cv::Vec3b>(y, x)[2] = magma_colormap[255 - value][0];
+	      } else {
+		// Use grayscale format.
+		depthmap.at<unsigned char>(y, x) = value;
+	      }
+	    }
+	  }
+	  // Store the generated depth map.
+	  depthmaps_.push_back(depthmap);
+	}
+      }
+    }
+  }
+  
+  /**
+   * @brief Generates a bird's-eye view map (BEV map) by back-projecting a depth map onto a 2D grid.
+   *
+   * This function creates a back-projected bird's-eye view map using the input depth map data from the 
+   * TensorRT model. It processes the output tensors of the model to compute the 3D coordinates of 
+   * points and maps them onto a 2D grid. The resulting BEV map is stored in the `bevmap_` member 
+   * variable as a CV_8UC3 Mat object.
+   *
+   * @param im_w Width of the input image used for scaling the back-projected points.
+   * @param im_h Height of the input image used for scaling the back-projected points.
+   * @param calibdata Calibration data containing camera intrinsic parameters and maximum distance.
+   */
+  void TrtLightnet::makeBackProjection(const int im_w, const int im_h, const Calibration calibdata)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    bevmap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
 
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
       int outputW = dims.d[3];
       int outputH = dims.d[2];
       int chan = dims.d[1];
-      // Identifying tensors by channel size and name for depthmap.      
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
       if (chan_size != chan) {
 	std::string name = trt_common_->getIOTensorName(i);
 	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
-	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) { // Check if tensor name contains "lgx" and tensor type is 'kFLOAT'.
-	  cv::Mat depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = (float)(im_w) / (float)outputW;
+	  float scale_h = (float)(im_h) / (float)outputH;
 	  float *buf = (float *)output_h_.at(i-1).get();
-	  for (int y = 0; y < outputH; y++) {
+	  float gran_h = (float)GRID_H / calibdata.max_distance;
+	  int mask_w = masks_[0].cols;
+	  int mask_h = masks_[0].rows;
+	  float mask_scale_w = mask_w / (float)outputW;
+	  float mask_scale_h = mask_h / (float)outputH;
+
+	  // Process the depth map within a specific vertical range (from 4/5 to 1/3 of the height).
+	  for (int y = outputH * 4/5; y >= outputH * 1/3; y--) {
 	    int stride = outputW * y;
 
 	    for (int x = 0; x < outputW; x++) {
-	      float rel = 1.0 - buf[stride + x];
-	      int value = (int)(rel * 255);
-	      depthmap.at<unsigned char>(y, x) = value;
+	      float distance = buf[stride + x] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+
+	      // Compute 3D coordinates from the 2D image coordinates.
+	      float src_x = x * scale_w;
+	      float src_y = y * scale_h;
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+	      float y3d = ((src_y - calibdata.v0) / calibdata.fy) * distance;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      if (x3d > 20.0) continue;
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      if (x3d > GRID_H || x3d < 0.0) continue;
+	      if (y3d < -1.5) continue;
+
+	      // Map the 3D point onto the 2D BEV map, applying the mask if available.
+	      if (masks_.size() > 0) {
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[0];
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[1];
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[2];
+	      } else {
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = 255;
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = 255;
+		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = 255;
+	      }
 	    }
 	  }
-	  depthmaps_.push_back(depthmap);
 	}
       }
     }
   }
 
+  /**
+   * Retrieves the generated BEV map.
+   * 
+   * @return BEV map.
+   */    
+  cv::Mat TrtLightnet::getBevMap(void)
+  {
+    return bevmap_;
+  }
+  
   /**
    * Retrieves the generated depth maps.
    * 
@@ -722,12 +853,12 @@ namespace tensorrt_lightnet
   }
 
 
-    /**
-     * @brief This function calculates the entropy maps from the softmax output of the network.
-     * It identifies the tensors that are not related to bounding box detections and processes 
-     * the tensors whose names contain "softmax". The function computes the entropy for each 
-     * channel and stores the entropy maps.
-     */    
+  /**
+   * @brief This function calculates the entropy maps from the softmax output of the network.
+   * It identifies the tensors that are not related to bounding box detections and processes 
+   * the tensors whose names contain "softmax". The function computes the entropy for each 
+   * channel and stores the entropy maps.
+   */    
   void TrtLightnet::calcEntropyFromSoftmax(void)
   {
     // Formula to identify output tensors not related to bounding box detections.

@@ -139,10 +139,19 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
       trt_lightnet->makeMask(argmax2bgr);
     }
 #pragma omp section
-    {	  
-      trt_lightnet->makeDepthmap();
+    {
+      std::string depth_format = get_depth_format();      
+      trt_lightnet->makeDepthmap(depth_format);
     }
   }
+  Calibration calibdata = {
+    .u0 = (float)(image.cols/2.0),
+    .v0 = (float)(image.rows/2.0),
+    .fx = get_fx(),
+    .fy = get_fy(),
+    .max_distance = get_max_distance(),
+  };
+  trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);  
 }
 
 /**
@@ -228,7 +237,11 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
     std::vector<cv::Mat> ent_maps = trt_lightnet->getEntropymaps();
     for (const auto &ent_map : ent_maps) {
       cv::imshow("entropy", ent_map);
-    }    
+    }
+  }
+  if (masks.size() > 0 && depthmaps.size() > 0) {
+    cv::Mat bevmap = trt_lightnet->getBevMap();
+    cv::imshow("bevmap", bevmap);
   }
 }
 
@@ -454,6 +467,12 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
       writeValue(p.string(), filename, entropies[i]);
     }
   }
+  if (masks.size() && depthmaps.size()) {
+    fs::path p = fs::path(save_path) / "bevmap";
+    fs::create_directory(p);
+    cv::Mat bevmap = trt_lightnet->getBevMap();
+    saveImage(bevmap, p.string(), png_name);
+  }  
 }
 
 /**
@@ -664,7 +683,8 @@ main(int argc, char* argv[])
 	trt_lightnet->calcEntropyFromSoftmax();
       }
       
-      if (!visualization_config.dont_show) {      
+      if (!visualization_config.dont_show) {
+	//if (1) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);

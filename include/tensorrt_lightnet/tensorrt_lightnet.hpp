@@ -55,7 +55,20 @@ enum TLR_Index {
   SIN_INDEX = 15, //angle
 };
 
+/**
+ * Calibration Parameters for Backprojection
+ */
+struct Calibration {
+  float u0;
+  float v0;     
+  float fx;
+  float fy;
+  float max_distance;
+};
 
+#define GRID_H 480
+#define GRID_W 240
+  
 /**
  * Configuration settings related to the model being used for inference.
  * Includes paths, classification thresholds, and anchor configurations.
@@ -372,10 +385,15 @@ public:
 
   /**
    * Generates depth maps from the network's output tensors that are not related to bounding box detections.
+   * @param depth_format depthmap format like "magma" and "grayscale".
    * The method identifies specific tensors for depth map generation based on channel size and name.
    */
-  void makeDepthmap(void);
+  void makeDepthmap(std::string &depth_format);
 
+  void makeBackProjection(const int im_w, const int im_h, const Calibration calibdata);
+
+  cv::Mat getBevMap(void);
+  
   /**
    * Retrieves the generated depth maps.
    * 
@@ -579,6 +597,8 @@ public:
    * Stores depth maps generated from the network's output, providing depth information for each pixel.
    */
   std::vector<cv::Mat> depthmaps_;
+
+  cv::Mat bevmap_;  
 
   /**
    * Stores bounding boxes detected by the subnet, allowing for specialized processing on selected detections.

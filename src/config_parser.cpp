@@ -143,6 +143,13 @@ DEFINE_uint64(workers, 1, "[OPTIONAL] number of workers for subnet processing");
 DEFINE_bool(entropy, false,
             "[OPTIONAL] Flag to calculate entropies from softmax layer for uncertainty estimations");
 
+DEFINE_string(depth, "grayscale",
+              "[OPTIONAL] Depth color format (magma/jet)");
+
+DEFINE_double(fx, 2.62731688e+03, "[OPTIONAL] fx for back projection");
+DEFINE_double(fy, 2.63141440e+03, "[OPTIONAL] fy for back projection");
+DEFINE_double(max_distance, 68.0, "[OPTIONAL] max_distance for back projection");
+
 std::string
 get_onnx_path(void)
 {
@@ -631,4 +638,28 @@ bool
 get_calc_entropy_flg(void)
 {
   return FLAGS_entropy;
+}
+
+std::string
+get_depth_format(void)
+{
+  return FLAGS_depth;
+}
+
+float
+get_fx(void)
+{
+  return (float)FLAGS_fx;
+}
+
+float
+get_fy(void)
+{
+  return (float)FLAGS_fy;
+}
+
+float
+get_max_distance(void)
+{
+  return (float)FLAGS_max_distance;
 }
