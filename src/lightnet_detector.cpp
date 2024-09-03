@@ -379,6 +379,37 @@ writeValue(std::string save_path, std::string filename, std::vector<float> &valu
 }
 
 /**
+ * @brief Saves entropy values to files.
+ * 
+ * This function saves entropy values to individual directories under a specified path.
+ * Each entropy vector is saved in its own directory.
+ *
+ * @param trt_lightnet Shared pointer to a TensorRT Lightnet instance
+ * @param save_path Base directory path where entropy values will be saved
+ * @param filename The name of the file to save the entropy values
+ */
+void writeEntropy(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, const std::string& save_path, const std::string& filename)
+{
+  // Retrieve the entropy vectors
+  std::vector<std::vector<float>> entropies = trt_lightnet->getEntropies();
+
+  // Create the main "entropy" directory if entropies are available
+  if (!entropies.empty()) {
+    fs::create_directories(fs::path(save_path) / "entropy");
+  }
+
+  // Save each entropy vector in its own directory
+  for (size_t i = 0; i < entropies.size(); i++) {
+    // Generate the path for each entropy directory
+    fs::path p = fs::path(save_path) / "entropy" / std::to_string(i);
+    fs::create_directory(p);
+
+    // Write the entropy values to the file
+    writeValue(p.string(), filename, entropies[i]);
+  }
+}
+
+/**
  * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
  * data from a TrtLightnet object.
  *
@@ -449,10 +480,8 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
   }
   if (get_calc_entropy_flg()) {
     std::vector<cv::Mat> ent_maps = trt_lightnet->getEntropymaps();
-    std::vector<std::vector<float>> entropies = trt_lightnet->getEntropies();
     if (ent_maps.size()) {
       fs::create_directories(fs::path(save_path) / "entropyVisualization");
-      fs::create_directories(fs::path(save_path) / "entropy");      
     }
     for (int i = 0; i < (int)ent_maps.size(); i++) {
       fs::path p = fs::path(save_path) / "entropyVisualization" / std::to_string(i);
@@ -460,11 +489,6 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
       cv::Mat resized;
       cv::resize(ent_maps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
       saveImage(resized, p.string(), png_name);
-    }
-    for (int i = 0; i < (int)entropies.size(); i++) {    
-      fs::path p = fs::path(save_path) / "entropy" / std::to_string(i);
-      fs::create_directory(p);
-      writeValue(p.string(), filename, entropies[i]);
     }
   }
   if (masks.size() && depthmaps.size()) {
@@ -681,6 +705,9 @@ main(int argc, char* argv[])
 
       if (get_calc_entropy_flg()) {
 	trt_lightnet->calcEntropyFromSoftmax();
+	if (path_config.save_path != "not-specified") {
+	  writeEntropy(trt_lightnet, path_config.save_path, file.path().filename());
+	}
       }
       
       if (!visualization_config.dont_show) {
@@ -732,6 +759,12 @@ main(int argc, char* argv[])
 
       if (get_calc_entropy_flg()) {
 	trt_lightnet->calcEntropyFromSoftmax();
+	if (path_config.save_path != "not-specified") {
+	  std::ostringstream sout;
+	  sout << std::setfill('0') << std::setw(6) << count;	  
+	  std::string name = "frame_" + sout.str() + ".jpg";	  
+	  writeEntropy(trt_lightnet, path_config.save_path, name);
+	}
       }
       
       if (!visualization_config.dont_show) {
