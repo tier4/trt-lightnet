@@ -46,6 +46,7 @@ This repository has been tested with the following environments:
 - CUDA 12.2 + TensorRT 8.6.0 on Ubuntu 22.04
 - CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack5.1
 - CUDA 11.8 + TensorRT 8.6.1 on Ubuntu 22.04
+- gcc <= 11.x
 
 #### For Docker Installation
 
@@ -58,10 +59,10 @@ This repository has been tested with the following environments:
 
 ### Steps for Local Installation
 
-1.  Clone the repository.
+1.  Clone the repository, and the dependent packages
 
 ```shell
-$ git clone git@github.com:tier4/trt-lightnet.git
+$ git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
 $ cd trt-lightnet
 ```
 
@@ -73,10 +74,6 @@ $ sudo apt install libgflags-dev
 $ sudo apt install libboost-all-dev
 $ sudo apt install libopencv-dev
 ```
-
-Install from the following repository.
-
-https://github.com/rogersce/cnpy
 
 
 3.  Compile the TensorRT implementation.
@@ -126,7 +123,7 @@ $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision fp16
 ```
 
 Build INT8 engine  
-(You need to prepare a list for calibration in "models/calibration_images.txt".)
+(You need to prepare a list for calibration in "configs/calibration_images.txt".)
 ```shell
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision int8 --first true
 ```
@@ -145,10 +142,50 @@ Inference from images
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision [fp32/fp16/int8] --first true {--dla [0/1]} --d DIRECTORY
 ```
 
-Inference from images
+Inference from video
 ```shell
 $ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision [fp32/fp16/int8] --first true {--dla [0/1]} --v VIDEO
 ```
+
+## Most commonly used arguments and options
+Here shows a part of most commonly used options for `trt-lightnet`. For more flags implemented, please refer to `src/config_parser.cpp`
+
+- `--flagfile <path>` (required):
+  - The path to the config file, which contains some basic operations (e.g. onnx, thresh)
+  - Note that the options in the config file can be overwritten from command line.
+  - Example: `../configs/CONFIGS.txt`
+
+- `--precision <level>` (required):
+  - Specified the quantization level during building the inference engine. Available options are:
+    - `fp32`: Full precision inference engine
+    - `fp16`: Half precision inference engine
+    - `int8`: int8 precision inference engine
+  - Note that, if `int8` is picked, it requires `calibration_images.txt` in `configs/` directory.
+  - Example: `int8`
+
+- `--first` (optional):
+  - A boolean flag to choose if applying quantization to first layer or not.
+    - Example: `true`
+  - In general, the first layer is a sensitive layer, where the quantization may leads to precision  drop. So set `--first` as `true` to skip the quantization is recommended.
+
+
+- `--d <path>` (optional):
+  - The path to the directory of images
+  - Example: `../sample_data/images`
+  - During the inference, user can press `space` to jump to next image to infer.
+  
+- `--v <path>` (optional):
+  - The path to the video file
+  - Example: `../sample_data/sample.mp4`
+
+- `--save-detections` (optional):
+  - A boolean flag to choose if save the detections result or not.
+  - Example: `true`
+
+- `--save-detections-path` (optional):
+  - The flag to determinate the output directory if `--save-detections` is set `true`
+  - Example: `../workspace/detections_result`
+
 
 ## Implementation
 
