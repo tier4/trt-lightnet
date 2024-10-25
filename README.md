@@ -96,13 +96,19 @@ $ cd trt-lightnet
 2.  Build the docker image.
 
 ```shell
-$ docker build -t trt-lightnet:latest .
+# For x86
+$ docker build -f Dockerfile_x86 -t trt-lightnet:latest .
+# For aarch64
+$ docker build -f Dockerfile_aarch64 -t trt-lightnet:latest .
 ```
 
 3. Run the docker container.
 
 ```shell
+# For x86
 $ docker run -it --gpus all trt-lightnet:latest
+# For aarch64
+$ docker run -it --runtime nvidia trt-lightnet:latest
 ```
 
 ## Model
