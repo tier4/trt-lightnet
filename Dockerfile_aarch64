@@ -1,0 +1,26 @@
+# Base image from NVIDIA for Jetson (includes CUDA and TensorRT support)
+FROM nvcr.io/nvidia/l4t-tensorrt:r8.6.2-devel
+
+ENV DEBIAN_FRONTEND noninteractive
+ENV TZ=Asia/Tokyo
+
+# Install fundamental packages
+RUN apt update -y \
+  && apt upgrade -y \
+  && apt install -y build-essential software-properties-common git cmake wget libgflags-dev libboost-all-dev libopencv-dev
+
+# Copy trt-lightnet to container
+RUN mkdir -p /opt/app
+COPY . /opt/app
+
+# Build cnpy
+WORKDIR /opt/app/packages/cnpy
+RUN mkdir -p build && cd build && cmake .. && make -j && make install
+
+# Build app
+WORKDIR /opt/app
+RUN . ~/.profile && mkdir -p build && cd build && cmake .. && make -j
+
+# Default CMD
+ENTRYPOINT ["/opt/app/docker-entrypoint.sh"]
+CMD ["/bin/bash"]

@@ -4,6 +4,7 @@ enable_language(CUDA)
 
 find_package(OpenMP REQUIRED)
 set(CMAKE_CXX_COMPILIER "/usr/bin/g++")
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -O3 -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -O0 -g -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath -Wl,$ORIGIN")
