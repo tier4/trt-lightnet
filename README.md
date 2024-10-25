@@ -108,7 +108,7 @@ $ docker build -f Dockerfile_aarch64 -t trt-lightnet:latest .
 # For x86
 $ docker run -it --gpus all trt-lightnet:latest
 # For aarch64
-$ docker run -it --runtime nvidia trt-lightnet:latest
+$ docker run -it --runtime=nvidia trt-lightnet:latest
 ```
 
 ## Model
