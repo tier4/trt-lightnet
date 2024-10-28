@@ -19,7 +19,6 @@ RUN mkdir -p build && cd build && cmake .. && make -j && make install
 
 # Build app
 WORKDIR /opt/app
-RUN . ~/.profile && mkdir -p build && cd build && cmake .. && make -j
 
 # Default CMD
 ENTRYPOINT ["/opt/app/docker-entrypoint.sh"]
