@@ -89,7 +89,7 @@ $ make -j
 1.  Clone the repository.
 
 ```shell
-$ git clone git@github.com:tier4/trt-lightnet.git
+$ git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
 $ cd trt-lightnet
 ```
 
