@@ -142,6 +142,7 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
     {
       std::string depth_format = get_depth_format();      
       trt_lightnet->makeDepthmap(depth_format);
+      trt_lightnet->makeKeypoint(image.rows, image.cols);
     }
   }
   Calibration calibdata = {
@@ -209,6 +210,88 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
 }
 
 /**
+ * @brief Performs keypoint inference using multiple subnetworks on a given image.
+ * 
+ * This function takes an input image and performs keypoint inference using multiple 
+ * TensorRT Lightnet subnetworks in parallel. The detected keypoints are then linked 
+ * back to the main network. It processes each bounding box region by cropping the 
+ * corresponding part of the image, running inference on the subnetwork, and adjusting 
+ * the keypoint positions to the original image coordinates.
+ * 
+ * @param trt_lightnet A shared pointer to the main TensorRT Lightnet network.
+ * @param subnet_trt_lightnets A vector of shared pointers to the subnetwork TensorRT Lightnets.
+ * @param image The input image on which keypoint inference is performed.
+ * @param names A vector of class names corresponding to detected objects.
+ * @param target A vector of target class names for which keypoint inference should be performed.
+ * @param numWorks The number of parallel workers to use for processing.
+ */
+void inferKeypointLightnets(
+			    std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
+			    std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets,
+			    cv::Mat &image,
+			    std::vector<std::string> &names,
+			    std::vector<std::string> &target,
+			    const int numWorks)
+{
+  // Get the bounding boxes from the main network and clear any existing keypoints.
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
+  trt_lightnet->clearKeypoint();
+  int num = static_cast<int>(bbox.size());
+
+  // Parallel processing of bounding boxes using OpenMP.
+  #pragma omp parallel for
+  for (int p = 0; p < numWorks; p++) {
+    std::vector<tensorrt_lightnet::KeypointInfo> subnetKeypoint;
+
+    // Divide the work across parallel workers.
+    for (int i = p * num / numWorks; i < (p + 1) * num / numWorks; i++) {
+      auto b = bbox[i];
+      bool flg = false;
+
+      // Check if the bounding box class is in the target list.
+      for (const auto &t : target) {
+	if (t == names[b.classId]) {
+	  flg = true;
+	  break;
+	}
+      }
+
+      if (!flg) {
+	continue; // Skip if the class is not in the target list.
+      }
+
+      // Define the region of interest (ROI) based on the bounding box.
+      cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
+      cv::Mat cropped = image(roi);
+
+      // Preprocess and run inference on the subnetwork.
+      subnet_trt_lightnets[p]->preprocess({cropped});
+      subnet_trt_lightnets[p]->doInference();
+      subnet_trt_lightnets[p]->makeKeypoint(cropped.rows, cropped.cols);
+
+      // Get the inferred keypoints and adjust them to the original image coordinates.
+      auto keypoint = subnet_trt_lightnets[p]->getKeypoints();
+      for (auto &k : keypoint) {
+	k.lx0 += b.box.x1;
+	k.ly0 += b.box.y1;
+	k.lx1 += b.box.x1;
+	k.ly1 += b.box.y1;
+	k.rx0 += b.box.x1;
+	k.ry0 += b.box.y1;
+	k.rx1 += b.box.x1;
+	k.ry1 += b.box.y1;
+	k.bot = b.box.y1;
+	k.left = b.box.x1;
+      }
+
+      // Link the adjusted keypoints back to the main network.
+      trt_lightnet->linkKeyPoint(keypoint, i);
+      subnetKeypoint.insert(subnetKeypoint.end(), keypoint.begin(), keypoint.end());
+    }
+  }
+}
+
+/**
  * Draws detected objects and their associated masks and depth maps on the image.
  * 
  * @param trt_lightnet A shared pointer to the TensorRT Lightnet model.
@@ -221,7 +304,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
   std::vector<cv::Mat> masks = trt_lightnet->getMask();
   std::vector<cv::Mat> depthmaps = trt_lightnet->getDepthmap();
-  
+  std::vector<tensorrt_lightnet::KeypointInfo> keypoint = trt_lightnet->getKeypoints();
   for (const auto &mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
@@ -231,6 +314,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   for (const auto &depth : depthmaps) {
     cv::imshow("depth", depth);
   }
+
   trt_lightnet->drawBbox(image, bbox, colormap, names);
 
   if (get_calc_entropy_flg()) {
@@ -242,6 +326,9 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
     cv::imshow("bevmap", bevmap);
+  }
+  if (keypoint.size() > 0) {
+    trt_lightnet->drawKeypoint(image, keypoint);
   }
 }
 
@@ -659,8 +746,9 @@ main(int argc, char* argv[])
     std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
   //Subnet configuration
   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets;
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;  
   VisualizationConfig subnet_visualization_config;
-  std::vector<std::string> target;
+  std::vector<std::string> target, keypoint_target;
   std::vector<std::string> bluron = get_bluron_names();
   int numWorks = get_workers();//omp_get_max_threads();
   if (get_subnet_onnx_path() != "not-specified") {
@@ -688,6 +776,26 @@ main(int argc, char* argv[])
 				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
     }
   }
+
+  if (get_keypoint_onnx_path() != "not-specified") {
+    ModelConfig keypoint_model_config = {
+      .model_path = get_keypoint_onnx_path(),
+      .num_class = get_classes(),
+      .score_threshold = static_cast<float>(get_score_thresh()),
+      .anchors = get_anchors(),
+      .num_anchors = get_num_anchors(),
+      .nms_threshold = static_cast<float>(get_nms_thresh()),      
+    };
+    keypoint_target = get_keypoint_names();
+    for (int w = 0; w < numWorks; w++) {
+      if (build_config.dla_core_id >= 2) {
+	//use multiple dlas [DLA0 and DLA1]
+	build_config.dla_core_id = (int)w/2;
+      }
+      keypoint_trt_lightnets.push_back(
+				     std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config));
+    }
+  }  
   
   
   if (!path_config.directory.empty()) {
@@ -701,6 +809,9 @@ main(int argc, char* argv[])
 	if (bluron.size()) {
 	  blurObjectFromSubnetBbox(trt_lightnet, image);
 	}
+      }
+      if (get_keypoint_onnx_path() != "not-specified" && keypoint_trt_lightnets.size()) {
+	inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
       }
 
       if (get_calc_entropy_flg()) {
@@ -757,6 +868,10 @@ main(int argc, char* argv[])
 	}
       }
 
+      if (get_keypoint_onnx_path() != "not-specified" && keypoint_trt_lightnets.size()) {
+	inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
+      }
+      
       if (get_calc_entropy_flg()) {
 	trt_lightnet->calcEntropyFromSoftmax();
 	if (path_config.save_path != "not-specified") {
