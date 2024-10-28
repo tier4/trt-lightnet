@@ -150,6 +150,15 @@ DEFINE_double(fx, 2.62731688e+03, "[OPTIONAL] fx for back projection");
 DEFINE_double(fy, 2.63141440e+03, "[OPTIONAL] fy for back projection");
 DEFINE_double(max_distance, 68.0, "[OPTIONAL] max_distance for back projection");
 
+//For keypoint (Optional)
+DEFINE_string(keypoint_onnx, "not-specified",
+              "Subnet ONNX Path, "
+              "Subnet ONNX Path");
+
+DEFINE_string(keypoint_names, "not-specified",
+              "Subnet list of names for detections"
+              "Subnet list of names for detections");
+
 std::string
 get_onnx_path(void)
 {
@@ -662,4 +671,23 @@ float
 get_max_distance(void)
 {
   return (float)FLAGS_max_distance;
+}
+
+//For keypoint
+
+std::string
+get_keypoint_onnx_path(void)
+{
+  return FLAGS_keypoint_onnx;
+}
+
+std::vector<std::string>
+get_keypoint_names(void)
+{
+  std::string filename = FLAGS_keypoint_names;
+  std::vector<std::string> names;
+  if (filename != "not-specified") {
+    names = loadListFromTextFile(filename);    
+  }
+  return names;
 }

@@ -66,8 +66,8 @@ struct Calibration {
   float max_distance;
 };
 
-#define GRID_H 480
-#define GRID_W 240
+#define GRID_H 640
+#define GRID_W 320
   
 /**
  * Configuration settings related to the model being used for inference.
@@ -126,29 +126,71 @@ namespace tensorrt_lightnet
   using cuda_utils::makeCudaStream; ///< Function to create a CUDA stream with automatic cleanup.
   using cuda_utils::StreamUniquePtr; ///< Wrapper for CUDA stream with automatic cleanup.
 
+
   /**
-   * Represents a bounding box in a 2D space.
+   * @brief Enum representing the indices of keypoint attributes in an array.
+   * 
+   * This enumeration defines the indices used to access different attributes of a keypoint.
    */
-  struct BBox
-  {
+  enum KEYPOINT_INDEX {
+    KEY_ID = 0,    ///< Index for the keypoint ID probability.
+    KEY_ATTR = 1,  ///< Index for the keypoint attribute probability.
+    KEY_LX0 = 2,   ///< Index for the left X coordinate of the first point.
+    KEY_LY0 = 3,   ///< Index for the left Y coordinate of the first point.
+    KEY_LX1 = 4,   ///< Index for the left X coordinate of the second point.
+    KEY_LY1 = 5,   ///< Index for the left Y coordinate of the second point.
+    KEY_RX0 = 6,   ///< Index for the right X coordinate of the first point.
+    KEY_RY0 = 7,   ///< Index for the right Y coordinate of the first point.
+    KEY_RX1 = 8,   ///< Index for the right X coordinate of the second point.
+    KEY_RY1 = 9    ///< Index for the right Y coordinate of the second point.
+  };
+
+  /**
+   * @brief Struct containing information about a keypoint.
+   * 
+   * This structure stores various attributes of a keypoint, such as its coordinates,
+   * probabilities, and additional attributes.
+   */
+  typedef struct KeypointInfo {
+    float id_prob;      ///< Probability associated with the keypoint ID.
+    float attr_prob;    ///< Attribute probability of the keypoint.
+    int lx0, ly0;       ///< Coordinates (X, Y) of the left-side first point.
+    int lx1, ly1;       ///< Coordinates (X, Y) of the left-side second point.
+    int rx0, ry0;       ///< Coordinates (X, Y) of the right-side first point.
+    int rx1, ry1;       ///< Coordinates (X, Y) of the right-side second point.
+    int bot;            ///< Bottom boundary coordinate, if applicable.
+    int left;           ///< Left boundary coordinate, if applicable.
+  } KeypointInfo;
+
+  /**
+   * @brief Represents a bounding box in a 2D space.
+   * 
+   * This structure defines the coordinates for the top-left and bottom-right corners
+   * of a bounding box, used to encapsulate an object in an image.
+   */
+  struct BBox {
     float x1, y1; ///< Top-left corner of the bounding box.
     float x2, y2; ///< Bottom-right corner of the bounding box.
   };
 
   /**
-   * Contains information about a detected object, including its bounding box,
+   * @brief Contains information about a detected object, including its bounding box,
    * label, class ID, and the probability of the detection.
+   * 
+   * This structure represents a detected object in an image, encapsulating various
+   * attributes such as its bounding box, classification, detection confidence, and
+   * associated keypoints.
    */
-  struct BBoxInfo
-  {
-    BBox box; ///< Bounding box of the detected object.
-    int label; ///< Label of the detected object.
-    int classId; ///< Class ID of the detected object.
-    float prob; ///< Probability of the detection.
-    bool isHierarchical;
-    int subClassId;
-    float sin;
-    float cos;
+  struct BBoxInfo {
+    BBox box;                       ///< Bounding box of the detected object.
+    int label;                      ///< Label of the detected object.
+    int classId;                    ///< Class ID of the detected object.
+    float prob;                     ///< Probability of the detection.
+    bool isHierarchical;            ///< Flag indicating if the detection uses hierarchical classification.
+    int subClassId;                 ///< Sub-class ID for hierarchical classification.
+    float sin;                      ///< Sine of an angle, if applicable to the object.
+    float cos;                      ///< Cosine of an angle, if applicable to the object.
+    std::vector<KeypointInfo> keypoint; ///< List of associated keypoints for the detected object.
   };
 
   template <typename ... Args>
@@ -390,10 +432,84 @@ public:
    */
   void makeDepthmap(std::string &depth_format);
 
+  /**
+   * @brief Generates a bird's-eye view map (BEV map) by back-projecting a depth map onto a 2D grid.
+   *
+   * This function creates a back-projected bird's-eye view map using the input depth map data from the 
+   * TensorRT model. It processes the output tensors of the model to compute the 3D coordinates of 
+   * points and maps them onto a 2D grid. The resulting BEV map is stored in the `bevmap_` member 
+   * variable as a CV_8UC3 Mat object.
+   *
+   * @param im_w Width of the input image used for scaling the back-projected points.
+   * @param im_h Height of the input image used for scaling the back-projected points.
+   * @param calibdata Calibration data containing camera intrinsic parameters and maximum distance.
+   */  
   void makeBackProjection(const int im_w, const int im_h, const Calibration calibdata);
 
   cv::Mat getBevMap(void);
-  
+
+  /**
+   * @brief Generates keypoints from the output tensors of the neural network.
+   * 
+   * This function processes the output tensors from a TensorRT model to identify 
+   * extracts keypoint information. It clears the existing 
+   * keypoints and creates new ones based on the output data, mapping normalized 
+   * coordinates to the specified image dimensions.
+   * 
+   * @param height The height of the image used to scale the keypoint coordinates.
+   * @param width The width of the image used to scale the keypoint coordinates.
+   */  
+  void makeKeypoint(int height, int width);
+
+  /**
+   * @brief Draws keypoints on the given image using predefined colors and shapes.
+   * 
+   * This function visualizes the keypoints by drawing circles, lines, and rectangles
+   * on the provided image, based on the attributes of each keypoint. It adjusts the
+   * drawing style depending on the keypoint's attribute probability.
+   * 
+   * @param img The image on which to draw the keypoints.
+   * @param keypoint A vector containing the keypoints to be drawn.
+   */  
+  void drawKeypoint(cv::Mat &img, std::vector<KeypointInfo> &keypoint);
+
+  /**
+   * @brief Draws keypoints on the given image using the specified color.
+   * 
+   * This function visualizes the keypoints using lines and rectangles, allowing
+   * the user to specify a custom color for all drawn elements.
+   * 
+   * @param img The image on which to draw the keypoints.
+   * @param keypoint A vector containing the keypoints to be drawn.
+   * @param color The color used for drawing the keypoints.
+   */  
+  void drawKeypoint(cv::Mat &img, std::vector<KeypointInfo> &keypoint, cv::Scalar color);  
+
+  /**
+   * Returns the list of keypoints detected by the engine.
+   * 
+   * @return A vector of KeypointInfo containing the keypoints detected by the engine.
+   */
+  std::vector<KeypointInfo> getKeypoints(void);
+
+  /**
+   * @brief Links a list of keypoints to a bounding box at the specified index.
+   * 
+   * This function associates the provided keypoints with a bounding box identified 
+   * by the given index, allowing the bounding box to store and reference keypoint data.
+   * 
+   * @param keypoint A vector containing the keypoints to be linked.
+   * @param bb_index The index of the bounding box in the bounding box list to which the keypoints should be linked.
+   */  
+  void linkKeyPoint(std::vector<KeypointInfo> &keypoint, int bb_index);
+
+  /**
+   * @brief Clears the list of stored keypoints.
+   * 
+   * This function empties the keypoint list, removing all previously stored keypoints.
+   * It is useful for resetting or reinitializing keypoint data before processing new data.
+   */  
+  void clearKeypoint();  
   /**
    * Retrieves the generated depth maps.
    * 
@@ -614,7 +730,12 @@ public:
   /**
    * Stores entropy maps for visualization
    */    
-  std::vector<cv::Mat> ent_maps_;  
+  std::vector<cv::Mat> ent_maps_;
+
+  /**
+   * Stores keypoints detected by the primary network.
+   */  
+  std::vector<KeypointInfo> keypoint_;  
 };
 
 }  // namespace tensorrt_lightnet

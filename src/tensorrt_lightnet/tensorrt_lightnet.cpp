@@ -515,8 +515,14 @@ namespace tensorrt_lightnet
 	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 16), 0, 0.5, color, 1);	  
 	}
       }
-      cv::rectangle(img, cv::Point(bbi.box.x1, bbi.box.y1), cv::Point(bbi.box.x2, bbi.box.y2), color, 4);
+      if (bbi.keypoint.size() == 0) {
+	cv::rectangle(img, cv::Point(bbi.box.x1, bbi.box.y1), cv::Point(bbi.box.x2, bbi.box.y2), color, 4);
+      }
       cv::putText(img, stream.str(), cv::Point(bbi.box.x1, bbi.box.y1 - 5), 0, 0.5, color, 1);
+      if (bbi.keypoint.size() > 0) {
+	auto keypoint = bbi.keypoint;
+	drawKeypoint(img, keypoint, color);
+      }
     }
   }
 
@@ -633,7 +639,7 @@ namespace tensorrt_lightnet
       int chan = dims.d[1];
 
       // Identify depth map tensors by checking the channel size and tensor name.
-      if (chan_size != chan) {
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
 	std::string name = trt_common_->getIOTensorName(i);
 	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
 
@@ -700,7 +706,7 @@ namespace tensorrt_lightnet
       int chan = dims.d[1];
 
       // Identify the depth map tensor by checking the channel size and tensor name.
-      if (chan_size != chan) {
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
 	std::string name = trt_common_->getIOTensorName(i);
 	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
 
@@ -1337,5 +1343,211 @@ namespace tensorrt_lightnet
       }
     }
     return binfo;
+  }
+
+  /**
+   * @brief Generates keypoints from the output tensors of the neural network.
+   * 
+   * This function processes the output tensors from a TensorRT model to identify 
+   * extracts keypoint information. It clears the existing 
+   * keypoints and creates new ones based on the output data, mapping normalized 
+   * coordinates to the specified image dimensions.
+   * 
+   * @param height The height of the image used to scale the keypoint coordinates.
+   * @param width The width of the image used to scale the keypoint coordinates.
+   */
+  void TrtLightnet::makeKeypoint(int height, int width) {
+    keypoint_.clear(); // Clear the list of keypoints before processing new data.
+
+    // Calculate the expected channel size for non-bounding box related output tensors.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Iterate over all output bindings to identify potential depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Check if the tensor is a depth map based on its dimensions and channel size.
+      if (chan_size != chan && outputW == 1 && outputH == 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Verify that the tensor name contains "lgx" and the data type is float.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float *buf = (float *)output_h_.at(i - 1).get(); // Access the tensor data buffer.
+
+	  KeypointInfo key;
+	  key.attr_prob = buf[KEY_ATTR]; // Extract the attribute probability.
+
+	  // Map normalized coordinates to the actual image dimensions.
+	  key.lx0 = static_cast<int>(buf[KEY_LX0] * (width - 1));
+	  key.ly0 = static_cast<int>(buf[KEY_LY0] * (height - 1));
+	  key.lx1 = static_cast<int>(buf[KEY_LX1] * (width - 1));
+	  key.ly1 = static_cast<int>(buf[KEY_LY1] * (height - 1));
+	  key.rx0 = static_cast<int>(buf[KEY_RX0] * (width - 1));
+	  key.ry0 = static_cast<int>(buf[KEY_RY0] * (height - 1));
+	  key.rx1 = static_cast<int>(buf[KEY_RX1] * (width - 1));
+	  key.ry1 = static_cast<int>(buf[KEY_RY1] * (height - 1));
+
+	  key.bot = 0; // Initialize bottom boundary (if needed).
+	  key.left = 0; // Initialize left boundary (if needed).
+
+	  keypoint_.push_back(key); // Add the newly created keypoint to the list.
+	}
+      }
+    }
+  }
+  
+  /**
+   * Returns the list of keypoints detected by the engine.
+   * 
+   * @return A vector of KeypointInfo containing the keypoints detected by the engine.
+   */
+  std::vector<KeypointInfo> TrtLightnet::getKeypoints(void)
+  {
+    return keypoint_;
+  }
+  
+  /**
+   * @brief Draws keypoints on the given image using predefined colors and shapes.
+   * 
+   * This function visualizes the keypoints by drawing circles, lines, and rectangles
+   * on the provided image, based on the attributes of each keypoint. It adjusts the
+   * drawing style depending on the keypoint's attribute probability.
+   * 
+   * @param img The image on which to draw the keypoints.
+   * @param keypoint A vector containing the keypoints to be drawn.
+   */
+  void TrtLightnet::drawKeypoint(cv::Mat &img, std::vector<KeypointInfo> &keypoint) {
+    for (int i = 0; i < (int)keypoint.size(); i++) {
+      KeypointInfo key = keypoint[i];
+      cv::Point pt_l0, pt_l1;
+      cv::Point pt_r0, pt_r1;
+      cv::Point pt_b0, pt_b1;
+      float attr = key.attr_prob;
+      pt_l0.x = key.lx0;
+      pt_l0.y = key.ly0;
+      pt_l1.x = key.lx1;
+      pt_l1.y = key.ly1;
+      pt_r0.x = key.rx0;
+      pt_r0.y = key.ry0;
+      pt_r1.x = key.rx1;
+      pt_r1.y = key.ry1;
+      //printf("Attr=%f, l0:[%d,%d], l1:[%d,%d], r0:[%d,%d], r1:[%d,%d]\n", attr, pt_l0.x, pt_l0.y, pt_l1.x, pt_l1.y, pt_r0.x, pt_r0.y, pt_r1.x, pt_r1.y);
+      pt_b0.x=pt_l0.x;
+      pt_b0.y=key.bot;
+
+      pt_b1.x=pt_l1.x;
+      pt_b1.y=key.bot;
+      cv::circle(img, pt_l0, 8, cv::Scalar(255, 0, 255), cv::FILLED, 4, 0);
+      cv::circle(img, pt_l1, 4, cv::Scalar(255, 0, 255), cv::FILLED, 4, 0);
+      cv::line(img, pt_l0, pt_l1, cv::Scalar(255, 0, 255), 4, 8, 0);
+      cv::line(img, pt_r1, pt_l1, cv::Scalar(255, 255, 255), 4, 8, 0);
+      cv::circle(img, pt_r0, 8, cv::Scalar(0, 255, 255), cv::FILLED, 4, 0);
+      cv::circle(img, pt_r1, 4, cv::Scalar(0, 255, 255), cv::FILLED, 4, 0);
+      cv::line(img, pt_r0, pt_r1, cv::Scalar(0, 255, 255), 4, 8, 0);
+      cv::line(img, pt_r0, pt_l0, cv::Scalar(0, 255, 0), 4, 8, 0);
+
+      cv::rectangle(img, pt_b1, pt_r1, cv::Scalar(128, 64, 0), 2, 8, 0);
+      cv::rectangle(img, pt_b0, pt_r0, cv::Scalar(0, 128, 255), 4, 8, 0);
+      if (attr < 0.5) {
+	cv::line(img, pt_b0, pt_r0, cv::Scalar(0, 128, 255), 1, 4, 0);
+	pt_b0.x=pt_r0.x;
+	pt_b0.y=key.bot;
+	cv::line(img, pt_b0, pt_l0, cv::Scalar(0, 128, 255), 1, 4, 0);
+      } else {
+	cv::line(img, pt_b1, pt_r1, cv::Scalar(128, 64, 0), 1, 4, 0);
+	pt_b1.x=pt_r1.x;
+	pt_b1.y=key.bot;
+	cv::line(img, pt_b1, pt_l1, cv::Scalar(128, 64, 0), 1, 4, 0);
+      }
+    }
+  }
+  
+  /**
+   * @brief Draws keypoints on the given image using the specified color.
+   * 
+   * This function visualizes the keypoints using lines and rectangles, allowing
+   * the user to specify a custom color for all drawn elements.
+   * 
+   * @param img The image on which to draw the keypoints.
+   * @param keypoint A vector containing the keypoints to be drawn.
+   * @param color The color used for drawing the keypoints.
+   */
+  void TrtLightnet::drawKeypoint(cv::Mat &img, std::vector<KeypointInfo> &keypoint, cv::Scalar color) {
+    for (int i = 0; i < (int)keypoint.size(); i++) {
+      KeypointInfo key = keypoint[i];
+      cv::Point pt_l0, pt_l1;
+      cv::Point pt_r0, pt_r1;
+      cv::Point pt_b0, pt_b1;
+      float attr = key.attr_prob;
+      pt_l0.x = key.lx0;
+      pt_l0.y = key.ly0;
+      pt_l1.x = key.lx1;
+      pt_l1.y = key.ly1;
+      pt_r0.x = key.rx0;
+      pt_r0.y = key.ry0;
+      pt_r1.x = key.rx1;
+      pt_r1.y = key.ry1;
+      pt_b0.x=pt_l0.x;
+      pt_b0.y=key.bot;
+
+      pt_b1.x=pt_l1.x;
+      pt_b1.y=key.bot;
+      cv::line(img, pt_l0, pt_l1, color, 4, 8, 0);
+      cv::line(img, pt_r1, pt_l1, color, 4, 8, 0);
+      cv::line(img, pt_r0, pt_r1, color, 4, 8, 0);
+      cv::line(img, pt_r0, pt_l0, color, 4, 8, 0);
+
+      cv::rectangle(img, pt_b0, pt_r0, color, 4, 8, 0);
+
+      cv::line(img, pt_b0, pt_b1, color, 4, 8, 0);
+      if (attr < 0.5) {
+	cv::line(img, pt_b0, pt_r0, color, 1, 4, 0);
+	pt_b0.x=pt_r0.x;
+	pt_b0.y=key.bot;
+	cv::line(img, pt_b0, pt_l0, color, 1, 4, 0);
+      } else {
+	cv::line(img, pt_b1, pt_r1, color, 1, 4, 0);
+	pt_b1.x=pt_r1.x;
+	pt_b1.y=key.bot;
+	cv::line(img, pt_b1, pt_l1, color, 1, 4, 0);
+      }
+      pt_b0.x=pt_l1.x;
+      cv::line(img, pt_b0, pt_l1, color, 2, 8, 0);
+      pt_b0.x=pt_r0.x;
+      pt_b0.y=key.bot;
+
+      pt_b1.x=pt_r1.x;
+      pt_b1.y=key.bot;
+      cv::line(img, pt_b0, pt_b1, color, 4, 8, 0);
+
+      cv::line(img, pt_b1, pt_r1, color, 2, 8, 0);
+    }
+  } 
+
+  /**
+   * @brief Links a list of keypoints to a bounding box at the specified index.
+   * 
+   * This function associates the provided keypoints with a bounding box identified 
+   * by the given index, allowing the bounding box to store and reference keypoint data.
+   * 
+   * @param keypoint A vector containing the keypoints to be linked.
+   * @param bb_index The index of the bounding box in the bounding box list to which the keypoints should be linked.
+   */
+  void TrtLightnet::linkKeyPoint(std::vector<KeypointInfo> &keypoint, int bb_index) {
+    bbox_[bb_index].keypoint = keypoint;
+  }
+
+  /**
+   * @brief Clears the list of stored keypoints.
+   * 
+   * This function empties the keypoint list, removing all previously stored keypoints.
+   * It is useful for resetting or reinitializing keypoint data before processing new data.
+   */
+  void TrtLightnet::clearKeypoint() {
+    keypoint_.clear();
   }
 }  // namespace tensorrt_lightnet

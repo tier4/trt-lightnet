@@ -332,3 +332,9 @@ get_fy(void);
 
 float
 get_max_distance(void);
+
+std::string
+get_keypoint_onnx_path(void);
+
+std::vector<std::string>
+get_keypoint_names(void);
