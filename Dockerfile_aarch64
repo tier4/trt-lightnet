@@ -1,5 +1,5 @@
 # Base image from NVIDIA for Jetson (includes CUDA and TensorRT support)
-FROM nvcr.io/nvidia/l4t-tensorrt:r8.6.2-devel
+FROM nvcr.io/nvidia/l4t-tensorrt:r8.5.2.2-devel
 
 ENV DEBIAN_FRONTEND noninteractive
 ENV TZ=Asia/Tokyo
