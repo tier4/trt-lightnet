@@ -110,6 +110,7 @@ $ docker run -it --gpus all trt-lightnet:latest
 # For aarch64
 $ docker run -it --runtime=nvidia trt-lightnet:latest
 $ mkdir build && cd build
+$ cmake ..
 $ make -j
 ```
 
