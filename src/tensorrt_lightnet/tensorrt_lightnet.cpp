@@ -915,16 +915,133 @@ namespace tensorrt_lightnet
     }
   }
 
-  std::vector<cv::Mat> TrtLightnet::getEntropymaps(void)
-  {
+  /**
+   * @brief This function returns the calculated entropy maps.
+   * 
+   * @return A vector of cv::Mat objects representing the entropy maps.
+   */  
+  std::vector<cv::Mat> TrtLightnet::getEntropymaps() {
     return ent_maps_;
   }
 
-  std::vector<std::vector<float>> TrtLightnet::getEntropies(void)
-  {
+  /**
+   * @brief This function returns the calculated entropies for each channel.
+   * 
+   * @return A vector of vectors, where each inner vector contains the entropies for a particular tensor.
+   */
+  std::vector<std::vector<float>> TrtLightnet::getEntropies() {
     return entropies_;
-  }  
+  }
+  
+  /**
+   * Calculates cross-task inconsistency between bounding box detections and segmentation maps.
+   *
+   * @param im_width Width of the input image.
+   * @param im_height Height of the input image.
+   * @param seg_colormap Vector of Colormap objects containing segmentation information for each class.
+   */
+  void TrtLightnet::calcCrossTaskInconsistency(int im_width, int im_height, std::vector<Colormap> &seg_colormap) {
+    // Expected channel size for bounding box-related tensors
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    inconsistency_.clear();
+    inconsistency_map_.clear();
 
+    // Iterate over output tensors, ignoring the first binding as it's typically the input tensor
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Check if tensor is a segmentation mask (not a bounding box) by verifying channel size
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "softmax")) { // Identifies tensors with "softmax" in their name
+	  const float *buf = (float *)output_h_.at(i-1).get();
+	  cv::Mat vis = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	  cv::Mat argmax = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	  cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+	  std::vector<float> inconsistency(chan, 0.0f);
+
+	  // Populate segmentation mask based on softmax probabilities
+	  for (int y = 0; y < outputH; y++) {
+	    for (int x = 0; x < outputW; x++) {
+	      for (int c = 0; c < chan; c++) {
+		if (!seg_colormap[c].is_dynamic) continue;
+		float p = buf[c * outputH * outputW + y * outputW + x];
+		unsigned char val = static_cast<unsigned char>(255 * p);
+		if (val > vis.at<unsigned char>(y, x)) {
+		  vis.at<unsigned char>(y, x) = val;
+		  argmax.at<unsigned char>(y, x) = c;
+		}
+	      }
+	    }
+	  }
+
+	  // Define margin to allow for bounding box overlap
+	  float margin = 0.05;
+
+	  // Adjust segmentation values within bounding box areas
+	  for (const auto& b : bbox_) {
+	    float scale_w = outputW / static_cast<float>(im_width);
+	    float scale_h = outputH / static_cast<float>(im_height);
+	    int x1 = b.box.x1 * scale_w;
+	    int x2 = b.box.x2 * scale_w;
+	    int y1 = b.box.y1 * scale_h;
+	    int y2 = b.box.y2 * scale_h;
+	    int ylen = y2 - y1;
+	    int xlen = x2 - x1;
+	    x1 = std::max(0, static_cast<int>(x1 - xlen * margin));
+	    y1 = std::max(0, static_cast<int>(y1 - ylen * margin));
+	    x2 = std::min(outputW - 1, static_cast<int>(x2 + xlen * margin));
+	    y2 = std::min(outputH - 1, static_cast<int>(y2 + ylen * margin));
+	    unsigned char prob = static_cast<unsigned char>(255 * b.prob);
+
+	    for (int y = y1; y <= y2; y++) {
+	      for (int x = x1; x <= x2; x++) {
+		vis.at<unsigned char>(y, x) = std::max(0, vis.at<unsigned char>(y, x) - prob);
+	      }
+	    }
+	  }
+
+	  // Map segmentation inconsistency and update color map for visualization
+	  for (int y = 0; y < outputH; y++) {
+	    for (int x = 0; x < outputW; x++) {
+	      int value = vis.at<unsigned char>(y, x);
+	      int index = argmax.at<unsigned char>(y, x);
+	      const auto &color = jet_colormap[255 - value];
+	      ent_map.at<cv::Vec3b>(y, x)[0] = color[0];
+	      ent_map.at<cv::Vec3b>(y, x)[1] = color[1];
+	      ent_map.at<cv::Vec3b>(y, x)[2] = color[2];
+	      inconsistency[index] += (value / 255.0f);
+	    }
+	  }
+
+	  inconsistency_.push_back(inconsistency);
+	  inconsistency_map_.push_back(ent_map);
+	}
+      }
+    }
+  }
+
+  /**
+   * Returns the inconsistency maps generated for cross-task inconsistency.
+   *
+   * @return Vector of cv::Mat representing the inconsistency maps.
+   */
+  std::vector<cv::Mat> TrtLightnet::getCrossTaskInconsistency_map() {
+    return inconsistency_map_;
+  }
+
+  /**
+   * Returns the calculated inconsistency values for each segmentation class.
+   *
+   * @return Vector of vectors containing inconsistency values for each class.
+   */
+  std::vector<std::vector<float>> TrtLightnet::getCrossTaskInconsistencies() {
+    return inconsistency_;
+  }
+    
   /**
    * Return mask.
    * 

@@ -232,6 +232,7 @@ namespace tensorrt_lightnet
     int id; ///< ID of the color map entry.
     std::string name; ///< Human-readable name associated with the ID.
     std::vector<unsigned char> color; ///< Color associated with the ID, typically in RGB format.
+    bool is_dynamic;
   } Colormap;
   
 /**
@@ -563,6 +564,30 @@ public:
    * @return A vector of vectors, where each inner vector contains the entropies for a particular tensor.
    */
   std::vector<std::vector<float>> getEntropies(void);
+
+
+  /**
+   * Calculates cross-task inconsistency between bounding box detections and segmentation maps.
+   *
+   * @param im_width Width of the input image.
+   * @param im_height Height of the input image.
+   * @param seg_colormap Vector of Colormap objects containing segmentation information for each class.
+   */  
+  void calcCrossTaskInconsistency(int im_width, int im_height, std::vector<Colormap> &seg_colormap);
+
+  /**
+   * Returns the inconsistency maps generated for cross-task inconsistency.
+   *
+   * @return Vector of cv::Mat representing the inconsistency maps.
+   */  
+  std::vector<cv::Mat> getCrossTaskInconsistency_map(void);
+
+  /**
+   * Returns the calculated inconsistency values for each segmentation class.
+   *
+   * @return Vector of vectors containing inconsistency values for each class.
+   */
+  std::vector<std::vector<float>> getCrossTaskInconsistencies(void);
   
   /**
    * Return mask.
@@ -732,6 +757,16 @@ public:
    */    
   std::vector<cv::Mat> ent_maps_;
 
+  /**
+   * Stores cross task inconsistency, allowing for uncertainty estimation using a multitask DNN for detection and segmentation.
+   */  
+  std::vector<std::vector<float>> inconsistency_;
+
+  /**
+   * Stores inconsistency maps for visualization
+   */      
+  std::vector<cv::Mat> inconsistency_map_;
+  
   /**
    * Stores keypoints detected by the primary network.
    */  

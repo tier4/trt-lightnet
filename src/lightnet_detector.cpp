@@ -323,6 +323,14 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
       cv::imshow("entropy", ent_map);
     }
   }
+
+  if (get_calc_cross_task_inconsistency_flg()) {
+    std::vector<cv::Mat> inconsitency_maps = trt_lightnet->getCrossTaskInconsistency_map();
+    for (const auto &inconsitency_map : inconsitency_maps) {
+      cv::imshow("inconsistency", inconsitency_map);
+    }    
+  }
+  
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
     cv::imshow("bevmap", bevmap);
@@ -497,6 +505,37 @@ void writeEntropy(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
 }
 
 /**
+ * @brief Saves CrossTaskInconsistency values to files.
+ * 
+ * This function saves CrossTaskInconsistency values to individual directories under a specified path.
+ * Each CrossTaskInconsistency vector is saved in its own directory.
+ *
+ * @param trt_lightnet Shared pointer to a TensorRT Lightnet instance
+ * @param save_path Base directory path where CrossTaskInconsistency values will be saved
+ * @param filename The name of the file to save the CrossTaskInconsistency values
+ */
+void writeCrossTaskInconsistency(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, const std::string& save_path, const std::string& filename)
+{
+  // Retrieve the CrossTaskInconsistency vectors
+  std::vector<std::vector<float>> inconsitencies = trt_lightnet->getCrossTaskInconsistencies();
+
+  // Create the main "CrossTaskInconsistency" directory if inconsitencies are available
+  if (!inconsitencies.empty()) {
+    fs::create_directories(fs::path(save_path) / "inconsistency");
+  }
+
+  // Save each CrossTaskInconsistency vector in its own directory
+  for (size_t i = 0; i < inconsitencies.size(); i++) {
+    // Generate the path for each CrossTaskInconsistency directory
+    fs::path p = fs::path(save_path) / "inconsistency" / std::to_string(i);
+    fs::create_directory(p);
+
+    // Write the CrossTaskInconsistency values to the file
+    writeValue(p.string(), filename, inconsitencies[i]);
+  }
+}
+
+/**
  * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
  * data from a TrtLightnet object.
  *
@@ -575,6 +614,19 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
       fs::create_directory(p);    
       cv::Mat resized;
       cv::resize(ent_maps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+      saveImage(resized, p.string(), png_name);
+    }
+  }
+  if (get_calc_cross_task_inconsistency_flg()) {
+    std::vector<cv::Mat> inconsistency_maps = trt_lightnet->getCrossTaskInconsistency_map();
+    if (inconsistency_maps.size()) {
+      fs::create_directories(fs::path(save_path) / "inconsistencyVisualization");
+    }
+    for (int i = 0; i < (int)inconsistency_maps.size(); i++) {
+      fs::path p = fs::path(save_path) / "inconsistencyVisualization" / std::to_string(i);
+      fs::create_directory(p);    
+      cv::Mat resized;
+      cv::resize(inconsistency_maps[i], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
       saveImage(resized, p.string(), png_name);
     }
   }
@@ -751,6 +803,7 @@ main(int argc, char* argv[])
   std::vector<std::string> target, keypoint_target;
   std::vector<std::string> bluron = get_bluron_names();
   int numWorks = get_workers();//omp_get_max_threads();
+  std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();
   if (get_subnet_onnx_path() != "not-specified") {
     ModelConfig subnet_model_config = {
       .model_path = get_subnet_onnx_path(),
@@ -764,7 +817,7 @@ main(int argc, char* argv[])
       .dont_show = is_dont_show(),
       .colormap = get_subnet_colormap(),
       .names = get_subnet_names(),
-      .argmax2bgr = getArgmaxToBgr(get_seg_colormap())
+      .argmax2bgr = getArgmaxToBgr(seg_colormap)
     };
     target = get_target_names();
     for (int w = 0; w < numWorks; w++) {
@@ -818,6 +871,13 @@ main(int argc, char* argv[])
 	trt_lightnet->calcEntropyFromSoftmax();
 	if (path_config.save_path != "not-specified") {
 	  writeEntropy(trt_lightnet, path_config.save_path, file.path().filename());
+	}
+      }
+
+      if (get_calc_cross_task_inconsistency_flg()) {
+	trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, seg_colormap);
+	if (path_config.save_path != "not-specified") {
+	  writeCrossTaskInconsistency(trt_lightnet, path_config.save_path, file.path().filename());	  
 	}
       }
       
@@ -880,6 +940,16 @@ main(int argc, char* argv[])
 	  std::string name = "frame_" + sout.str() + ".jpg";	  
 	  writeEntropy(trt_lightnet, path_config.save_path, name);
 	}
+      }
+
+      if (get_calc_cross_task_inconsistency_flg()) {
+	trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, seg_colormap);
+	if (path_config.save_path != "not-specified") {
+	  std::ostringstream sout;
+	  sout << std::setfill('0') << std::setw(6) << count;	  
+	  std::string name = "frame_" + sout.str() + ".jpg";	  
+	  writeCrossTaskInconsistency(trt_lightnet, path_config.save_path, name);
+	}	
       }
       
       if (!visualization_config.dont_show) {

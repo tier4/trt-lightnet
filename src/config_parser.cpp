@@ -143,6 +143,9 @@ DEFINE_uint64(workers, 1, "[OPTIONAL] number of workers for subnet processing");
 DEFINE_bool(entropy, false,
             "[OPTIONAL] Flag to calculate entropies from softmax layer for uncertainty estimations");
 
+DEFINE_bool(inconsistency, false,
+            "[OPTIONAL] Flag to calculate cross task inconsistency from detection and softmax layer for uncertainty estimations");
+
 DEFINE_string(depth, "grayscale",
               "[OPTIONAL] Depth color format (magma/jet)");
 
@@ -325,6 +328,7 @@ get_seg_colormap(void)
   if (filename != "not-specified") {
     std::vector<std::string> color_list = loadListFromTextFile(filename);    
     for (int i = 0; i < (int)color_list.size(); i++) {
+      int col = 0;
       if (i == 0) {
 	//Skip header
 	continue;
@@ -336,13 +340,14 @@ get_seg_colormap(void)
       assert(npos != std::string::npos);
       int id = (int)std::stoi(trim(colormapString.substr(0, npos)));
       colormapString.erase(0, npos + 1);
-      
+      col++;	
       npos = colormapString.find_first_of(',');
       assert(npos != std::string::npos);      
       std::string name = (trim(colormapString.substr(0, npos)));
       cmap.id = id;
       cmap.name = name;
       colormapString.erase(0, npos + 1);
+      col++;	
       while (!colormapString.empty()) {
 	size_t npos = colormapString.find_first_of(',');
 	if (npos != std::string::npos) {
@@ -350,10 +355,21 @@ get_seg_colormap(void)
 	  cmap.color.push_back(c);
 	  colormapString.erase(0, npos + 1);
 	} else {
-	  unsigned char c = (unsigned char)std::stoi(trim(colormapString));
-	  cmap.color.push_back(c);
+	  if (col > 4) {
+	    std::string str = trim(colormapString);
+	    if (str == "true") {
+	      cmap.is_dynamic = true;
+	    } else {
+	      cmap.is_dynamic = false;
+	    }
+	  } else {
+	    unsigned char c = (unsigned char)std::stoi(trim(colormapString));
+	    cmap.color.push_back(c);
+	    
+	  }
 	  break;
-	}      
+	}
+	col++;	
       }
       
       seg_cmap.push_back(cmap);
@@ -647,6 +663,12 @@ bool
 get_calc_entropy_flg(void)
 {
   return FLAGS_entropy;
+}
+
+bool
+get_calc_cross_task_inconsistency_flg(void)
+{
+  return FLAGS_inconsistency;
 }
 
 std::string

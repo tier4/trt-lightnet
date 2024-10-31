@@ -321,6 +321,9 @@ get_workers(void);
 bool
 get_calc_entropy_flg(void);
 
+bool
+get_calc_cross_task_inconsistency_flg(void);
+
 std::string
 get_depth_format(void);
 
