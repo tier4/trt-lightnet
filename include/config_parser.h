@@ -341,3 +341,6 @@ get_keypoint_onnx_path(void);
 
 std::vector<std::string>
 get_keypoint_names(void);
+
+bool
+get_smooth_depthmap_using_semseg(void);

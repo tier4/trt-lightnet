@@ -66,9 +66,11 @@ struct Calibration {
   float max_distance;
 };
 
-#define GRID_H 640
-#define GRID_W 320
-  
+#define GRID_H 1280
+#define GRID_W 640
+//#define GRID_H 640
+//#define GRID_W 320
+
 /**
  * Configuration settings related to the model being used for inference.
  * Includes paths, classification thresholds, and anchor configurations.
@@ -133,7 +135,7 @@ namespace tensorrt_lightnet
    * This enumeration defines the indices used to access different attributes of a keypoint.
    */
   enum KEYPOINT_INDEX {
-    KEY_ID = 0,    ///< Index for the keypoint ID probability.
+    KEY_OCC = 0,    ///< Index for the occussion.
     KEY_ATTR = 1,  ///< Index for the keypoint attribute probability.
     KEY_LX0 = 2,   ///< Index for the left X coordinate of the first point.
     KEY_LY0 = 3,   ///< Index for the left Y coordinate of the first point.
@@ -153,6 +155,7 @@ namespace tensorrt_lightnet
    */
   typedef struct KeypointInfo {
     float id_prob;      ///< Probability associated with the keypoint ID.
+    bool isOccluded;    // flg to occulusion     
     float attr_prob;    ///< Attribute probability of the keypoint.
     int lx0, ly0;       ///< Coordinates (X, Y) of the left-side first point.
     int lx1, ly1;       ///< Coordinates (X, Y) of the left-side second point.
@@ -450,6 +453,44 @@ public:
   cv::Mat getBevMap(void);
 
   /**
+   * @brief Smoothes the depth map using road segmentation information.
+   *
+   * This function processes depth map tensors to refine the depth values 
+   * by averaging distances over regions identified as roads or similar surfaces 
+   * in the segmentation map. The smoothed depth values are then applied back to the depth map.
+   */
+  void smoothDepthmapFromRoadSegmentation(void);
+
+  /**
+   * @brief Calculates the median distance from a region in a buffer.
+   *
+   * This function extracts distance values from a specified region in the buffer,
+   * based on the bounding box coordinates, and computes the median distance.
+   *
+   * @param buf Pointer to the buffer containing distance data.
+   * @param outputW Width of the output buffer (used for indexing).
+   * @param scale_w Horizontal scaling factor for the buffer.
+   * @param scale_h Vertical scaling factor for the buffer.
+   * @param b Bounding box specifying the region of interest.
+   * @return Median distance value from the specified region.
+   */  
+  float get_meadian_dist(const float *buf, int outputW, float scale_w, float scale_h, const BBox b);
+
+  /**
+   * @brief Adds bounding boxes into a bird's-eye view (BEV) map.
+   *
+   * This function processes bounding box information to project it into a BEV map. 
+   * It calculates the position, dimensions, and angles of objects based on keypoints 
+   * and calibration data. The resulting bounding boxes are visualized in the BEV map.
+   * (under development ...)
+   * @param im_w Width of the input image.
+   * @param im_h Height of the input image.
+   * @param calibdata Calibration data containing intrinsic and extrinsic camera parameters.
+   * @param names Vector of object class names corresponding to their labels.
+   */  
+  void addBBoxIntoBevmap(const int im_w, const int im_h, const Calibration calibdata, std::vector<std::string> &names);  
+
+  /**
    * @brief Generates keypoints from the output tensors of the neural network.
    * 
    * This function processes the output tensors from a TensorRT model to identify 
@@ -739,6 +780,9 @@ public:
    */
   std::vector<cv::Mat> depthmaps_;
 
+  /**
+   * Stores bev maps generated from the depth and segseg with calibration info .
+   */  
   cv::Mat bevmap_;  
 
   /**

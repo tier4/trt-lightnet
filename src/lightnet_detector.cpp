@@ -127,6 +127,10 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
   trt_lightnet->preprocess({image});
   //inference
   trt_lightnet->doInference();
+
+  if (get_smooth_depthmap_using_semseg()) {
+    trt_lightnet->smoothDepthmapFromRoadSegmentation();
+  }
   //postprocess
 #pragma omp parallel sections
   {
@@ -259,11 +263,15 @@ void inferKeypointLightnets(
       if (!flg) {
 	continue; // Skip if the class is not in the target list.
       }
-
+      if ((b.box.x2 - b.box.x1) < 32) {
+	continue;
+      }
       // Define the region of interest (ROI) based on the bounding box.
+      //int ylen = (b.box.y2 + 32) < image.rows ? (b.box.y2 - b.box.y1 + 32) : (b.box.y2 - b.box.y1);
+      //cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, ylen);
       cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
       cv::Mat cropped = image(roi);
-
+      
       // Preprocess and run inference on the subnetwork.
       subnet_trt_lightnets[p]->preprocess({cropped});
       subnet_trt_lightnets[p]->doInference();
@@ -289,6 +297,14 @@ void inferKeypointLightnets(
       subnetKeypoint.insert(subnetKeypoint.end(), keypoint.begin(), keypoint.end());
     }
   }
+  Calibration calibdata = {
+    .u0 = (float)(image.cols/2.0),
+    .v0 = (float)(image.rows/2.0),
+    .fx = get_fx(),
+    .fy = get_fy(),
+    .max_distance = get_max_distance(),
+  };
+  trt_lightnet->addBBoxIntoBevmap(image.cols, image.rows, calibdata, names);    
 }
 
 /**
@@ -881,8 +897,8 @@ main(int argc, char* argv[])
 	}
       }
       
-      if (!visualization_config.dont_show) {
-	//if (1) {
+      //if (!visualization_config.dont_show) {
+      if (1) {
 	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
 	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
 	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);

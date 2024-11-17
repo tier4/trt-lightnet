@@ -60,6 +60,24 @@ extern const unsigned char jet_colormap[256][3];
 extern const unsigned char magma_colormap[256][3];
 
 
+inline float quantize_angle(float angle, int bin)
+{
+  return (int(angle/bin)) * bin;
+}
+
+inline double
+calculateAngle(double x1, double y1, double x2, double y2) {
+  double deltaY = y2 - y1;
+  
+  double deltaX = x2 - x1;
+
+  double angleRadians = atan2(deltaY, deltaX);
+
+  double angleDegrees = angleRadians * (180.0 / M_PI);
+
+  return angleDegrees;
+}
+
 /**
  * @brief Draws an arrow on the given image.
  *
@@ -73,7 +91,8 @@ extern const unsigned char magma_colormap[256][3];
  * @param lineType The type of the arrow lines. Default value is 8 (8-connected line).
  * @param shift The number of fractional bits in the point coordinates. Default value is 0.
  */
-inline void arrow(cv::Mat image, cv::Point pt1, cv::Point pt2, cv::Scalar color, int thickness = 1, int lineType = 8, int shift = 0)
+inline
+void arrow(cv::Mat image, cv::Point pt1, cv::Point pt2, cv::Scalar color, int thickness = 1, int lineType = 8, int shift = 0)
 {
   // Calculate the vector components between pt1 and pt2
   float vx = (float)(pt2.x - pt1.x);
@@ -615,6 +634,79 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * @brief Smoothes the depth map using road segmentation information.
+   *
+   * This function processes depth map tensors to refine the depth values 
+   * by averaging distances over regions identified as roads or similar surfaces 
+   * in the segmentation map. The smoothed depth values are then applied back to the depth map.
+   */
+  void TrtLightnet::smoothDepthmapFromRoadSegmentation() {
+    // Formula to identify tensors unrelated to bounding box detections.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Iterate over all tensor bindings to locate depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify depth map tensors by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Verify tensor type is FLOAT and name contains "lgx".
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float *buf = static_cast<float *>(output_h_.at(i - 1).get());
+
+	  // Find the segmentation tensor for road segmentation labels.
+	  for (int j = 1; j < trt_common_->getNbBindings(); j++) {
+	    std::string seg_name = trt_common_->getIOTensorName(j);
+
+	    if (contain(seg_name, "argmax")) {
+	      const auto seg_dims = trt_common_->getBindingDimensions(j);
+	      const int segWidth = seg_dims.d[3];
+	      const int segHeight = seg_dims.d[2];
+	      const float scaleW = static_cast<float>(outputW) / segWidth;
+	      const float scaleH = static_cast<float>(outputH) / segHeight;
+	      const int *argmax = (int *)(output_h_.at(j - 1).get());
+
+	      // Iterate over the height of the depth map.
+	      for (int y = 0; y < outputH; y++) {
+		float sum_dist = 0.0;
+		int count = 0;
+
+		// First pass: Calculate average depth for road segments.
+		for (int x = 0; x < outputW; x++) {
+		  const int id = argmax[static_cast<int>(x * scaleW) + segWidth * static_cast<int>(y * scaleH)];
+		  if ((id >= 8 && id <= 12) || id == 5) { // Road-related segmentation IDs
+		    count++;
+		    sum_dist += buf[x + outputW * y];
+		  }
+		}
+
+		// Avoid division by zero in case no road segments are detected.
+		if (count > 0) {
+		  sum_dist /= count;
+		}
+
+		// Second pass: Apply smoothed distance to road segment pixels.
+		for (int x = 0; x < outputW; x++) {
+		  const int id = argmax[static_cast<int>(x * scaleW) + segWidth * static_cast<int>(y * scaleH)];
+		  if ((id >= 8 && id <= 12) || id == 5) { // Road-related segmentation IDs
+		    buf[x + outputW * y] = sum_dist;
+		  }
+		}
+	      }
+	    }
+	  }
+	}
+      }
+    }
+  }
+    
+  /**
    * @brief Generates depth maps from the output tensors of the TensorRT model.
    *
    * This function processes the output tensors from the TensorRT model to generate depth maps.
@@ -704,7 +796,6 @@ namespace tensorrt_lightnet
       int outputW = dims.d[3];
       int outputH = dims.d[2];
       int chan = dims.d[1];
-
       // Identify the depth map tensor by checking the channel size and tensor name.
       if (chan_size != chan && outputW > 1 && outputH > 1) {
 	std::string name = trt_common_->getIOTensorName(i);
@@ -722,7 +813,8 @@ namespace tensorrt_lightnet
 	  float mask_scale_h = mask_h / (float)outputH;
 
 	  // Process the depth map within a specific vertical range (from 4/5 to 1/3 of the height).
-	  for (int y = outputH * 4/5; y >= outputH * 1/3; y--) {
+	  //for (int y = outputH * 4/5; y >= outputH * 1/3; y--) {
+	  for (int y = outputH-1; y >= 0; y--) {	  
 	    int stride = outputW * y;
 
 	    for (int x = 0; x < outputW; x++) {
@@ -739,7 +831,7 @@ namespace tensorrt_lightnet
 	      if (x3d > 20.0) continue;
 	      x3d = (x3d + 20.0) * GRID_W / 40.0;
 	      if (x3d > GRID_H || x3d < 0.0) continue;
-	      if (y3d < -1.5) continue;
+	      if (y3d < -2.5) continue;
 
 	      // Map the 3D point onto the 2D BEV map, applying the mask if available.
 	      if (masks_.size() > 0) {
@@ -778,7 +870,285 @@ namespace tensorrt_lightnet
     return depthmaps_;
   }
 
+  /**
+   * @brief Calculates the median distance from a region in a buffer.
+   *
+   * This function extracts distance values from a specified region in the buffer,
+   * based on the bounding box coordinates, and computes the median distance.
+   *
+   * @param buf Pointer to the buffer containing distance data.
+   * @param outputW Width of the output buffer (used for indexing).
+   * @param scale_w Horizontal scaling factor for the buffer.
+   * @param scale_h Vertical scaling factor for the buffer.
+   * @param b Bounding box specifying the region of interest.
+   * @return Median distance value from the specified region.
+   */
+  float TrtLightnet::get_meadian_dist(const float *buf, int outputW, float scale_w, float scale_h, const BBox b) {
+    std::vector<float> dist;
 
+    // Iterate over the region defined by the bounding box
+    for (int y = b.y1; y < b.y2; y++) {
+      for (int x = b.x1; x < b.x2; x++) {
+	// Calculate the index in the buffer and fetch the distance value
+	int stride = outputW * static_cast<int>(y * scale_h);
+	dist.push_back(buf[stride + static_cast<int>(x * scale_w)]);
+      }
+    }
+
+    // Ensure the distance vector is not empty before accessing the median
+    if (dist.empty()) {
+      return 0.0f; // Return 0 if no values are present to avoid undefined behavior
+    }
+
+    // Sort the distances to compute the median
+    std::sort(dist.begin(), dist.end());
+
+    // Calculate and return the median value
+    return dist[dist.size() / 2];
+  }
+  
+  /**
+   * @brief Adds bounding boxes into a bird's-eye view (BEV) map.
+   *
+   * This function processes bounding box information to project it into a BEV map. 
+   * It calculates the position, dimensions, and angles of objects based on keypoints 
+   * and calibration data. The resulting bounding boxes are visualized in the BEV map.
+   * (under development ...)
+   * @param im_w Width of the input image.
+   * @param im_h Height of the input image.
+   * @param calibdata Calibration data containing intrinsic and extrinsic camera parameters.
+   * @param names Vector of object class names corresponding to their labels.
+   */
+  void TrtLightnet::addBBoxIntoBevmap(const int im_w, const int im_h, const Calibration calibdata, std::vector<std::string> &names)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    const float VEHICLE_LEN = 2.2;
+    const float VEHICLE_WIDTH = 1.2;
+    const float PED_LEN = 0.25;
+    const float PED_WIDTH = 0.25;
+    const float CYCLE_LEN = 1.0;
+    const float CYCLE_WIDTH = 0.5;        
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w =  (float)outputW / (float)(im_w);
+	  float scale_h = (float)outputH / (float)(im_h);
+	  float *buf = (float *)output_h_.at(i-1).get();
+	  float gran_h = (float)GRID_H / calibdata.max_distance;
+
+	  for (const auto& b : bbox_) {
+	    if (b.keypoint.size()) {
+	      int offset = 0;
+	      int lx0 = b.keypoint[0].lx0 + offset;
+	      int ly0 = b.keypoint[0].ly0 + offset;
+	      int lx1 = b.keypoint[0].lx1 + offset;
+	      int ly1 = b.keypoint[0].ly1 - offset;
+	      int rx0 = b.keypoint[0].rx0 - offset;
+	      int ry0 = b.keypoint[0].ry0 + offset;
+	      int rx1 = b.keypoint[0].rx1 - offset;
+	      int ry1 = b.keypoint[0].ry1 - offset;
+	      bool is_front = (b.keypoint[0].attr_prob > 0.5);
+	      int cx = (b.box.x1 + b.box.x2) / 2;
+	      //int cy = b.box.y2;
+	      int cy = (ly0+ry0)/2;	      
+
+	      int stride = outputW * int(ly0 * scale_h);
+	      float distance = buf[stride + int(lx0 * scale_w)] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+	      float src_x = (float)lx0;
+
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      if (x3d > 20.0) continue;
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      cv::Point p_lx0;
+	      p_lx0.x = x3d;
+	      p_lx0.y = GRID_H - static_cast<int>(distance * gran_h);
+#ifdef DEBUG	      	      
+	      cv::circle(bevmap_, p_lx0, 1, cv::Scalar(255, 0, 255), cv::FILLED, 4, 0);
+#endif
+	      stride = outputW * int(ly1 * scale_h);
+	      distance = buf[stride + int(lx1 * scale_w)] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;	      
+	      src_x = (float)lx1;
+
+	      x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      if (x3d > 20.0) continue;
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      cv::Point p_lx1;
+	      p_lx1.x = x3d;
+	      p_lx1.y = GRID_H - static_cast<int>(distance * gran_h);
+#ifdef DEBUG	      	      
+	      cv::circle(bevmap_, p_lx1, 1, cv::Scalar(255, 255, 0), cv::FILLED, 4, 0);
+	      cv::line(bevmap_, p_lx0, p_lx1, cv::Scalar(255, 255, 255), 1, 8, 0);
+#endif	      
+	      //rx0,rx1
+	      stride = outputW * int(ry0 * scale_h);
+	      distance = buf[stride + int(rx0 * scale_w)] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+	      src_x = (float)rx0;
+
+	      x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      if (x3d > 20.0) continue;
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      cv::Point p_rx0;
+	      p_rx0.x = x3d;
+	      p_rx0.y = GRID_H - static_cast<int>(distance * gran_h);
+#ifdef DEBUG	      	      
+	      cv::circle(bevmap_, p_rx0, 1, cv::Scalar(255, 0, 255), cv::FILLED, 4, 0);
+#endif
+	      stride = outputW * int(ry1 * scale_h);
+	      distance = buf[stride + int(rx1 * scale_w)] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;	      
+	      src_x = (float)rx1;
+
+	      x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      if (x3d > 20.0) continue;
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      cv::Point p_rx1;
+	      p_rx1.x = x3d;
+	      p_rx1.y = GRID_H - static_cast<int>(distance * gran_h);
+#ifdef DEBUG	      	      
+	      cv::circle(bevmap_, p_rx1, 1, cv::Scalar(255, 255, 0), cv::FILLED, 4, 0);
+	      cv::line(bevmap_, p_rx0, p_rx1, cv::Scalar(255, 255, 255), 1, 8, 0);
+#endif
+	      //center
+	      stride = outputW * int(cy * scale_h);
+	      float rel_dist = buf[stride + int(cx * scale_w)];
+	      if (b.keypoint[0].isOccluded) {
+		rel_dist = get_meadian_dist(buf, outputW, scale_w, scale_h, b.box);
+	      }
+	      distance = rel_dist * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+	      if (distance < 2.0) {
+		continue;
+	      }
+	      src_x = (float)cx;
+
+	      x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+
+	      // Skip points that are too far in the x-direction or below the ground plane.
+	      x3d = (x3d + 20.0) * GRID_W / 40.0;
+	      cv::Point p_center;
+	      p_center.x = x3d;
+	      p_center.y = GRID_H - static_cast<int>(distance * gran_h);
+#ifdef DEBUG	      	      
+	      cv::circle(bevmap_, p_center, 4, cv::Scalar(0, 0, 255), cv::FILLED, 4, 0);
+#endif
+	      float angle;
+
+	      if (abs(b.box.x1-lx1) < abs(b.box.x2-rx1)) {	      
+		if (abs(p_lx1.x-p_lx0.x) < 1) {
+		  angle = 0.0;
+		} else {
+		  angle =  calculateAngle(p_lx1.x, p_lx1.y, p_lx0.x , p_lx0.y) - 90;		  
+		}
+	      } else {
+		if (abs(p_rx1.x-p_rx0.x) < 1) {
+		  angle = 0.0;
+		} else {
+		  angle =  calculateAngle(p_rx1.x, p_rx1.y, p_rx0.x , p_rx0.y) - 90;		  
+		}
+	      }
+	      //angle = quantize_angle(angle, 96);
+	      cv::Point2f center;
+	      cv::Size rectSize;
+	      int xlen = b.box.x2 - b.box.x1;
+	      float cuboid_len;
+	      float cuboid_width;	      
+	      cuboid_len = VEHICLE_LEN;
+	      cuboid_width = VEHICLE_WIDTH;
+	      if (names[b.label] == "PEDESTRIAN") {
+		cuboid_len = PED_LEN;
+		cuboid_width = PED_WIDTH;
+	      } else if (names[b.label] == "BICYCLE" || names[b.label] == "MOTORBIKE") {
+		cuboid_len = CYCLE_LEN;
+		cuboid_width = CYCLE_WIDTH;
+	      }
+	      if (abs(lx0-b.box.x1) < (xlen * 0.07) && abs(rx0-b.box.x2) < (xlen * 0.07)) {
+		angle = -0.0;
+		center.x = p_center.x;
+		center.y = p_lx0.y - static_cast<int>(cuboid_len * gran_h) / 2;
+		rectSize.width = static_cast<int>(cuboid_width * (GRID_W / 40.0));		
+		rectSize.height = static_cast<int>(cuboid_len * gran_h);
+	      } else if (abs(b.box.x1-lx1) < abs(b.box.x2-rx1)) {	      
+		p_lx1.y = p_center.y - static_cast<int>(cuboid_len * gran_h);
+		p_lx1.x = p_center.x - static_cast<int>(cuboid_width/2 * (GRID_W / 40.0));
+		p_rx0.x = p_center.x + static_cast<int>(cuboid_width/2 * (GRID_W / 40.0));		  
+		p_rx0.y = p_center.y;		
+		center.x = (p_lx0.x+p_rx0.x) / 2.0;
+		center.y = (p_lx1.y+p_rx0.y) / 2.0;
+		rectSize.width = p_rx0.x - p_lx1.x;
+		rectSize.height = p_rx0.y - p_lx1.y;				
+	      } else {
+		p_lx0.y = p_center.y;
+		p_lx0.x = p_center.x - static_cast<int>(cuboid_width/2 * (GRID_W / 40.0));
+		p_rx1.x = p_center.x + static_cast<int>(cuboid_width/2 * (GRID_W / 40.0));		  
+		p_rx1.y = p_center.y - static_cast<int>(cuboid_len * gran_h);
+		center.x = (p_rx0.x+p_lx0.x) / 2.0;
+		center.y = (p_rx1.y+p_lx0.y) / 2.0;
+		rectSize.width = p_rx1.x - p_lx0.x;
+		rectSize.height = p_lx0.y - p_rx1.y;		
+	      }
+
+	      if (b.keypoint[0].isOccluded) {
+		angle = 0.0;
+	      }		
+	      cv::RotatedRect rotatedRect(center, rectSize, angle);
+
+	      cv::Point2f vertices[4];
+	      rotatedRect.points(vertices);
+		
+	      for (int v = 0; v < 4; v++) {
+		
+		if (abs(lx0-b.box.x1) < (xlen * 0.07) && abs(rx0-b.box.x2) < (xlen * 0.07)) {		  
+		  cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 128, 0), 1);
+		  //cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 128, 0), 1);		  		  
+		} else if (abs(b.box.x1-lx1) < abs(b.box.x2-rx1)) {	      		  
+		  //cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(0, 0, 255), 1);
+		  cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 128, 0), 1);		  
+		} else {
+		  //cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(0, 255, 0), 1);
+		  cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 128, 0), 1);		  
+		}
+		if (v == 1 && !is_front) {
+		  cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 255, 255), 2);
+		} else if (v == 3 && is_front) {
+		  cv::line(bevmap_, vertices[v], vertices[(v + 1) % 4], cv::Scalar(255, 255, 255), 2);
+		}
+		
+	      }
+#ifdef DEBUG	      	      	      
+	      if (b.keypoint[0].isOccluded) {
+		cv::putText(bevmap_, "OCC", p_center, 0, 0.5, cv::Scalar(0, 0, 255), 2);	  
+	      }
+	      cv::putText(bevmap_, std::to_string(int(angle)), p_center, 0, 0.5, cv::Scalar(255, 0, 255), 1);	  	      
+#endif	      
+	    }
+
+	  }	  
+	  
+	}
+      }
+    }
+  }
+  
   /**
    * @brief Applies the argmax operation to a given buffer and writes the result into a mask.
    * 
@@ -812,7 +1182,6 @@ namespace tensorrt_lightnet
     }
 
   }
-
   
   /**
    * Generates segmentation masks from the network's output using argmax operation results.
@@ -1497,7 +1866,11 @@ namespace tensorrt_lightnet
 
 	  KeypointInfo key;
 	  key.attr_prob = buf[KEY_ATTR]; // Extract the attribute probability.
-
+	  if (static_cast<bool>(buf[KEY_OCC] > 0.9)) {
+	    key.isOccluded = true;
+	  } else {
+	    key.isOccluded = false;
+	  }
 	  // Map normalized coordinates to the actual image dimensions.
 	  key.lx0 = static_cast<int>(buf[KEY_LX0] * (width - 1));
 	  key.ly0 = static_cast<int>(buf[KEY_LY0] * (height - 1));
@@ -1543,6 +1916,7 @@ namespace tensorrt_lightnet
       cv::Point pt_l0, pt_l1;
       cv::Point pt_r0, pt_r1;
       cv::Point pt_b0, pt_b1;
+      //cv::Point pt_t0, pt_t1;      
       float attr = key.attr_prob;
       pt_l0.x = key.lx0;
       pt_l0.y = key.ly0;
@@ -1555,6 +1929,9 @@ namespace tensorrt_lightnet
       //printf("Attr=%f, l0:[%d,%d], l1:[%d,%d], r0:[%d,%d], r1:[%d,%d]\n", attr, pt_l0.x, pt_l0.y, pt_l1.x, pt_l1.y, pt_r0.x, pt_r0.y, pt_r1.x, pt_r1.y);
       pt_b0.x=pt_l0.x;
       pt_b0.y=key.bot;
+      pt_b0.x=pt_l0.x;
+      pt_b0.y=key.bot;
+      
 
       pt_b1.x=pt_l1.x;
       pt_b1.y=key.bot;
@@ -1567,7 +1944,7 @@ namespace tensorrt_lightnet
       cv::line(img, pt_r0, pt_r1, cv::Scalar(0, 255, 255), 4, 8, 0);
       cv::line(img, pt_r0, pt_l0, cv::Scalar(0, 255, 0), 4, 8, 0);
 
-      cv::rectangle(img, pt_b1, pt_r1, cv::Scalar(128, 64, 0), 2, 8, 0);
+      cv::rectangle(img, pt_b1, pt_r1, cv::Scalar(128, 64, 0), 2, 8, 0);      
       cv::rectangle(img, pt_b0, pt_r0, cv::Scalar(0, 128, 255), 4, 8, 0);
       if (attr < 0.5) {
 	cv::line(img, pt_b0, pt_r0, cv::Scalar(0, 128, 255), 1, 4, 0);
@@ -1612,13 +1989,17 @@ namespace tensorrt_lightnet
       pt_b0.y=key.bot;
 
       pt_b1.x=pt_l1.x;
+      //      pt_b1.x=pt_l1.x;
+      pt_b1.x=pt_r0.x;            
       pt_b1.y=key.bot;
       cv::line(img, pt_l0, pt_l1, color, 4, 8, 0);
       cv::line(img, pt_r1, pt_l1, color, 4, 8, 0);
       cv::line(img, pt_r0, pt_r1, color, 4, 8, 0);
       cv::line(img, pt_r0, pt_l0, color, 4, 8, 0);
 
-      cv::rectangle(img, pt_b0, pt_r0, color, 4, 8, 0);
+      //cv::rectangle(img, pt_b0, pt_r0, color, 4, 8, 0);
+      cv::line(img, pt_b0, pt_l0, color, 4, 8, 0);
+      cv::line(img, pt_b1, pt_r0, color, 4, 8, 0); 
 
       cv::line(img, pt_b0, pt_b1, color, 4, 8, 0);
       if (attr < 0.5) {
@@ -1634,14 +2015,23 @@ namespace tensorrt_lightnet
       }
       pt_b0.x=pt_l1.x;
       cv::line(img, pt_b0, pt_l1, color, 2, 8, 0);
+      pt_b1.x=pt_l0.x;
+      pt_b1.y=key.bot;
+      cv::line(img, pt_b0, pt_b1, color, 2, 8, 0);
+      
       pt_b0.x=pt_r0.x;
       pt_b0.y=key.bot;
-
       pt_b1.x=pt_r1.x;
       pt_b1.y=key.bot;
       cv::line(img, pt_b0, pt_b1, color, 4, 8, 0);
-
       cv::line(img, pt_b1, pt_r1, color, 2, 8, 0);
+
+#ifdef DEBUG      
+      if (key.isOccluded) {
+	cv::putText(img, "occluded", cv::Point((pt_l0.x+pt_r0.x)/2, (pt_l1.y-16)), 0, 0.5, cv::Scalar(0, 0, 255), 8);	  
+      } else {
+      }
+#endif      
     }
   } 
 

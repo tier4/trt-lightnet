@@ -162,6 +162,9 @@ DEFINE_string(keypoint_names, "not-specified",
               "Subnet list of names for detections"
               "Subnet list of names for detections");
 
+DEFINE_bool(smooth, false,
+            "[OPTIONAL] Flag to depthmap using semantic segmentation");
+
 std::string
 get_onnx_path(void)
 {
@@ -712,4 +715,10 @@ get_keypoint_names(void)
     names = loadListFromTextFile(filename);    
   }
   return names;
+}
+
+bool
+get_smooth_depthmap_using_semseg(void)
+{
+  return FLAGS_smooth;
 }
