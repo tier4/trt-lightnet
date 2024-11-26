@@ -26,11 +26,14 @@
 #include <omp.h>
 #include <config_parser.h>
 #include <cnpy.h>
+#include <pcd2image.hpp>
+#include <CalibratedSensorParser.h>
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
  */
 struct PathConfig {
+  std::string t4dataset_directory; ///< T4 Dataset Directory containing images for inference.  
   std::string directory; ///< Directory containing images for inference.
   std::string video_path; ///< Path to a video file for inference.
   int camera_id; ///< Camera device ID for live inference.
@@ -50,6 +53,7 @@ struct VisualizationConfig {
   std::vector<std::vector<int>> colormap; ///< Color mapping for classes in bounding boxes.
   std::vector<std::string> names; ///< Names of the classes for display.
   std::vector<cv::Vec3b> argmax2bgr; ///< Mapping from class indices to BGR colors for segmentation masks.
+  std::vector<tensorrt_lightnet::Colormap> seg_colormap;
 };
 
 template <typename ... Args>
@@ -573,11 +577,16 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
   if (png_name.find(".jpg") != std::string::npos) {
     replaceOtherStr(png_name, ".jpg", ".png");
   }
+  if (filename.find(".pcd.bin") != std::string::npos) {  
+    replaceOtherStr(filename, ".pcd.bin", ".png");
+    png_name = filename;
+  }
+  
   fs::create_directories(fs::path(save_path));
 #pragma omp parallel sections
   {
 #pragma omp section
-    {      
+    {
       fs::path p = fs::path(save_path) / "detections";
       fs::create_directories(p);
       saveImage(image, p.string(), filename);
@@ -748,6 +757,170 @@ savePrediction(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std
   writePredictions(p.string(), filename, names, bbox);
 }
 
+/**
+ * @brief Runs the inference pipeline for LightNet, including optional subnet and keypoint processing, 
+ *        entropy calculations, cross-task inconsistency checks, and visualization.
+ *
+ * @param trt_lightnet Pointer to the main TensorRT LightNet model.
+ * @param subnet_trt_lightnets Vector of pointers to subnet TensorRT LightNet models.
+ * @param keypoint_trt_lightnets Vector of pointers to keypoint TensorRT LightNet models.
+ * @param image Input image for processing.
+ * @param visualization_config Configuration for visualization of the main LightNet results.
+ * @param subnet_visualization_config Configuration for visualization of subnet LightNet results.
+ * @param target List of target class names for subnet processing.
+ * @param keypoint_target List of target class names for keypoint processing.
+ * @param bluron List of targets to apply blur effects.
+ * @param path_config Configuration for saving outputs.
+ * @param filename Name of the file to save the output.
+ * @param sensor_name Sensor name to include in the output path.
+ * @param cam_name Camera name to include in the output path.
+ */
+void inferLightNetPipeline(
+			   std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
+			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &subnet_trt_lightnets,
+			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &keypoint_trt_lightnets,
+			   cv::Mat &image,
+			   VisualizationConfig visualization_config,
+			   VisualizationConfig subnet_visualization_config,
+			   std::vector<std::string> &target,
+			   std::vector<std::string> &keypoint_target,
+			   std::vector<std::string> &bluron,
+			   PathConfig path_config,
+			   std::string filename,
+			   std::string sensor_name,
+			   std::string cam_name
+			   ) {
+  int numWorks = get_workers();
+
+  // Perform inference with the main LightNet model
+  inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
+
+  // Check and process subnet LightNets if applicable
+  if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
+    inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
+    if (!bluron.empty()) {
+      blurObjectFromSubnetBbox(trt_lightnet, image);
+    }
+  }
+
+  // Check and process keypoint LightNets if applicable
+  if (get_keypoint_onnx_path() != "not-specified" && !keypoint_trt_lightnets.empty()) {
+    inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
+  }
+
+  // Calculate entropy and save results if required
+  if (get_calc_entropy_flg()) {
+    trt_lightnet->calcEntropyFromSoftmax();
+    if (path_config.save_path != "not-specified") {
+      fs::path dstPath(path_config.save_path);
+      if (!sensor_name.empty()) {
+	dstPath /= sensor_name;
+      }
+      if (!cam_name.empty()) {
+	dstPath /= cam_name;
+      }
+      writeEntropy(trt_lightnet, dstPath.string(), filename);
+    }
+  }
+
+  // Calculate cross-task inconsistency and save results if required
+  if (get_calc_cross_task_inconsistency_flg()) {
+    trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, visualization_config.seg_colormap);
+    if (path_config.save_path != "not-specified") {
+      fs::path dstPath(path_config.save_path);
+      if (!sensor_name.empty()) {
+	dstPath /= sensor_name;
+      }
+      if (!cam_name.empty()) {
+	dstPath /= cam_name;
+      }
+      writeCrossTaskInconsistency(trt_lightnet, dstPath.string(), filename);
+    }
+  }
+
+  // Draw visualizations if not suppressed
+  if (!visualization_config.dont_show) {
+    drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+    if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
+      drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
+    }
+  }
+
+  // Save results if the save flag is enabled
+  if (path_config.flg_save) {
+    fs::path dstPath(path_config.save_path);
+    if (!sensor_name.empty()) {
+      dstPath /= sensor_name;
+    }
+    if (!cam_name.empty()) {
+      dstPath /= cam_name;
+    }
+    saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, dstPath.string(), filename);
+  }
+
+  // Save debug tensors if the debug save flag is enabled
+  if (path_config.flg_save_debug_tensors && !path_config.save_path.empty()) {
+    fs::path debugPath = fs::path(path_config.save_path) / "debug_tensors";
+    saveDebugTensors(trt_lightnet, debugPath.string(), filename);
+  }
+}
+
+
+/**
+ * @brief Retrieves the calibrated sensor information for a specified camera from the given calibration data path.
+ *
+ * @param caliibrationInfoPath Path to the directory containing calibration data files.
+ * @param camera_name Name of the camera whose calibrated information is to be retrieved.
+ * @return CalibratedSensorInfo The calibrated sensor information for the specified camera.
+ */
+CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, std::string camera_name) {
+  std::string sensorFileName;
+  std::string calibratedSensorFileName;
+  std::vector<Sensor> sensors;
+  std::vector<CalibratedSensorInfo> calibratedSensors;
+  CalibratedSensorInfo targetCalibratedInfo;
+
+  // Construct file paths for sensor.json and calibrated_sensor.json
+  sensorFileName = (std::filesystem::path(caliibrationInfoPath) / "sensor.json").string();
+  calibratedSensorFileName = (std::filesystem::path(caliibrationInfoPath) / "calibrated_sensor.json").string();
+
+  try {
+    // Parse the sensor data from sensor.json
+    SensorParser::parse(sensorFileName, sensors);
+
+    // Parse the calibrated sensor data from calibrated_sensor.json
+    CalibratedSensorParser::parse(calibratedSensorFileName, calibratedSensors);
+
+    // Iterate through each calibrated sensor and match it with its corresponding sensor information
+    for (auto& calibratedSensor : calibratedSensors) {
+      // Retrieve and set the sensor name and modality based on the sensor token
+      calibratedSensor.name = SensorParser::getSensorNameFromToken(sensors, calibratedSensor.sensor_token);
+      calibratedSensor.modality = SensorParser::getSensorModalityFromToken(sensors, calibratedSensor.sensor_token);
+
+      // Set default resolution for the sensor
+      calibratedSensor.width = 1920;
+      calibratedSensor.height = 1280;
+
+      // Override resolution for specific camera types
+      if (calibratedSensor.name == "CAM_FRONT_NARROW" || calibratedSensor.name == "CAM_FRONT_WIDE") {
+	calibratedSensor.width = 2880;
+	calibratedSensor.height = 1860;
+      }
+
+      // If the current sensor matches the target camera name, store its information
+      if (calibratedSensor.name == camera_name) {
+	targetCalibratedInfo = calibratedSensor;
+      }
+    }
+  } catch (const std::exception& e) {
+    // Handle any errors that occur during parsing or processing
+    std::cerr << "Error: " << e.what() << std::endl;
+  }
+
+  // Return the calibrated sensor information for the specified camera
+  return targetCalibratedInfo;
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -777,6 +950,7 @@ main(int argc, char* argv[])
   };
   
   PathConfig path_config = {
+    .t4dataset_directory = get_t4_dataset_directory_path(),
     .directory = get_directory_path(),
     .video_path = get_video_path(),
     .camera_id = get_camera_id(),
@@ -787,17 +961,17 @@ main(int argc, char* argv[])
     .flg_save_debug_tensors = get_save_debug_tensors()
   };
 
+  std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();  
   VisualizationConfig visualization_config = {
     .dont_show = is_dont_show(),
     .colormap = get_colormap(),
     .names = get_names(),
-    .argmax2bgr = getArgmaxToBgr(get_seg_colormap())
+    .argmax2bgr = getArgmaxToBgr(get_seg_colormap()),
+    .seg_colormap = get_seg_colormap()
   };
   
   
   int count = 0;
-  // File saving flag and path from PathConfig.
-  bool flg_save = path_config.flg_save;
   std::string save_path = path_config.save_path;
   tensorrt_common::BuildConfig build_config(
 					    inference_config.calibration_type,
@@ -819,7 +993,7 @@ main(int argc, char* argv[])
   std::vector<std::string> target, keypoint_target;
   std::vector<std::string> bluron = get_bluron_names();
   int numWorks = get_workers();//omp_get_max_threads();
-  std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();
+
   if (get_subnet_onnx_path() != "not-specified") {
     ModelConfig subnet_model_config = {
       .model_path = get_subnet_onnx_path(),
@@ -866,62 +1040,65 @@ main(int argc, char* argv[])
     }
   }  
   
-  
-  if (!path_config.directory.empty()) {
+  auto p2i = pcd2image::Pcd2image();
+  CalibratedSensorInfo targetCalibratedInfo;
+  if (get_lidar_range_image_flg()) {
+    std::string caliibrationInfoPath = get_sensor_config();
+    if (!path_config.t4dataset_directory.empty()) {
+      fs::path t4_dataset(path_config.t4dataset_directory);
+      fs::path t4_annotation = t4_dataset / "annotation";
+      caliibrationInfoPath = t4_annotation.string();
+    }
+    targetCalibratedInfo = getTargetCalibratedInfo(caliibrationInfoPath, get_camera_name());
+  }
+  if (!path_config.t4dataset_directory.empty()) {
+    std::cout << path_config.t4dataset_directory << std::endl;
+    fs::path t4_dataset(path_config.t4dataset_directory);
+    fs::path t4_data = t4_dataset / "data";
+    for (const auto& dir : fs::directory_iterator(t4_data.string())) {
+      fs::path cam_data(dir);
+      std::string sensor_name = cam_data.filename();
+      std::string cam_name = "";
+      std::cout << " |_" << dir.path() << " - " << sensor_name <<std::endl;
+      if ((!get_lidar_range_image_flg() && sensor_name.find("CAM") != std::string::npos) ||
+	  (get_lidar_range_image_flg() && sensor_name.find("LIDAR_CONCAT") != std::string::npos)) {
+	for (const auto& file : fs::directory_iterator(cam_data.string())) {
+	  if (!get_lidar_range_image_flg() && file.path().extension() != ".jpg") continue;
+	  if (get_lidar_range_image_flg() && file.path().extension() != ".bin") continue;	  
+	  std::cout << "Inference from " << file.path() << std::endl;
+	  cv::Mat image;
+	  if (get_lidar_range_image_flg()) {
+	    //get range image from lidar pcd
+	    image = p2i.makeRangeImageFromCalibration(file.path(), targetCalibratedInfo, 120.0);
+	    cam_name = targetCalibratedInfo.name;
+	  } else {
+	    image = cv::imread(file.path(), cv::IMREAD_COLOR);
+	  }
+	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
+	  
+	  if (!visualization_config.dont_show) {
+	    if (image.rows > 1280 && image.cols > 1920) {
+	      cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
+	    }
+	    cv::imshow("inference", image);	
+	    cv::waitKey(0);
+	  }
+	  count++;
+	}
+      }
+    } 
+  } else if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
       std::cout << "Inference from " << file.path() << std::endl;
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
-      inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
-
-      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
-	if (bluron.size()) {
-	  blurObjectFromSubnetBbox(trt_lightnet, image);
-	}
-      }
-      if (get_keypoint_onnx_path() != "not-specified" && keypoint_trt_lightnets.size()) {
-	inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
-      }
-
-      if (get_calc_entropy_flg()) {
-	trt_lightnet->calcEntropyFromSoftmax();
-	if (path_config.save_path != "not-specified") {
-	  writeEntropy(trt_lightnet, path_config.save_path, file.path().filename());
-	}
-      }
-
-      if (get_calc_cross_task_inconsistency_flg()) {
-	trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, seg_colormap);
-	if (path_config.save_path != "not-specified") {
-	  writeCrossTaskInconsistency(trt_lightnet, path_config.save_path, file.path().filename());	  
-	}
-      }
-      
-      //if (!visualization_config.dont_show) {
-      if (1) {
-	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
-	}
-      }
-      if (path_config.flg_save) {
-	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, file.path().filename());
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	  //savePrediction(subnet_trt_lightnets, subnet_visualization_config.names, path_config.save_path, file.path().filename(), "subnet_predictions");
-	}
-      }
-      if (path_config.flg_save_debug_tensors && path_config.save_path != "") {
-	fs::path p = fs::path(path_config.save_path) / "debug_tensors";
-	saveDebugTensors(trt_lightnet, p.string(), file.path().filename());
-      }      
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
 	}
 	cv::imshow("inference", image);	
 	cv::waitKey(0);
-      }
-      count++;
+      }      
     }
   } else if (!path_config.video_path.empty() || path_config.camera_id != -1) {
     cv::VideoCapture video;
@@ -934,60 +1111,10 @@ main(int argc, char* argv[])
       cv::Mat image;
       video >> image;
       if (image.empty()) break;
-      inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
-
-      if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
-	if (bluron.size()) {
-	  blurObjectFromSubnetBbox(trt_lightnet, image);
-	  //applyPixelationObjectFromSubnetBbox(trt_lightnet, image);
-	}
-      }
-
-      if (get_keypoint_onnx_path() != "not-specified" && keypoint_trt_lightnets.size()) {
-	inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
-      }
-      
-      if (get_calc_entropy_flg()) {
-	trt_lightnet->calcEntropyFromSoftmax();
-	if (path_config.save_path != "not-specified") {
-	  std::ostringstream sout;
-	  sout << std::setfill('0') << std::setw(6) << count;	  
-	  std::string name = "frame_" + sout.str() + ".jpg";	  
-	  writeEntropy(trt_lightnet, path_config.save_path, name);
-	}
-      }
-
-      if (get_calc_cross_task_inconsistency_flg()) {
-	trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, seg_colormap);
-	if (path_config.save_path != "not-specified") {
-	  std::ostringstream sout;
-	  sout << std::setfill('0') << std::setw(6) << count;	  
-	  std::string name = "frame_" + sout.str() + ".jpg";	  
-	  writeCrossTaskInconsistency(trt_lightnet, path_config.save_path, name);
-	}	
-      }
-      
-      if (!visualization_config.dont_show) {
-	drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
-	if (get_subnet_onnx_path() != "not-specified" && subnet_trt_lightnets.size()) {
-	  drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
-	}
-      }
-      if (flg_save) {
-	std::ostringstream sout;
-	sout << std::setfill('0') << std::setw(6) << count;	  
-	std::string name = "frame_" + sout.str() + ".jpg";
-	saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, path_config.save_path, name);
-      }
-      if (path_config.flg_save_debug_tensors && path_config.save_path != "") {
-	std::ostringstream sout;
-	sout << std::setfill('0') << std::setw(6) << count;	  
-	std::string name = "frame_" + sout.str() + ".jpg";
-	fs::path p = fs::path(path_config.save_path) / "debug_tensors";
-	saveDebugTensors(trt_lightnet, p.string(), name);
-      }	
-
+      std::ostringstream sout;
+      sout << std::setfill('0') << std::setw(6) << count;	  
+      std::string name = "frame_" + sout.str() + ".jpg";	              
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
       
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {

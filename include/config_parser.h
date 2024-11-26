@@ -27,6 +27,14 @@ typedef struct _cropping_info{
 std::string get_onnx_path(void);
 
 /**
+ * Retrieves the t4dataset directory path where resources or outputs are stored.
+ *
+ * @return The t4 dataset directory path as a string.
+ */
+std::string
+get_t4_dataset_directory_path(void);
+
+/**
  * Retrieves the directory path where resources or outputs are stored.
  *
  * @return The directory path as a string.
@@ -344,3 +352,12 @@ get_keypoint_names(void);
 
 bool
 get_smooth_depthmap_using_semseg(void);
+
+bool
+get_lidar_range_image_flg(void);
+
+std::string
+get_sensor_config(void);
+
+std::string
+get_camera_name(void);

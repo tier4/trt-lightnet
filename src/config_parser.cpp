@@ -14,6 +14,10 @@ DEFINE_string(onnx, "lightnet-tiny.onnx",
 DEFINE_bool(dont_show, false,
 	    "[Optional] Flag to off screen");
 
+DEFINE_string(t4d, "",
+              "Directory Path, "
+              "Directory Path");
+
 DEFINE_string(d, "",
               "Directory Path, "
               "Directory Path");
@@ -165,10 +169,26 @@ DEFINE_string(keypoint_names, "not-specified",
 DEFINE_bool(smooth, false,
             "[OPTIONAL] Flag to depthmap using semantic segmentation");
 
+DEFINE_bool(lidar, false,
+            "[OPTIONAL] Flag to inference for lidar range image");
+
+DEFINE_string(sensor_config, "not-specified",
+              "directory for sensor configuration");
+
+DEFINE_string(camera_name, "CAM_FRONT",
+              "camera name for range image");
+
+
 std::string
 get_onnx_path(void)
 {
   return FLAGS_onnx;
+}
+
+std::string
+get_t4_dataset_directory_path(void)
+{
+  return FLAGS_t4d;
 }
 
 std::string
@@ -722,3 +742,22 @@ get_smooth_depthmap_using_semseg(void)
 {
   return FLAGS_smooth;
 }
+
+bool
+get_lidar_range_image_flg(void)
+{
+  return FLAGS_lidar;
+}
+
+std::string
+get_sensor_config(void)
+{
+  return FLAGS_sensor_config;
+}
+
+std::string
+get_camera_name(void)
+{
+  return FLAGS_camera_name;
+}
+

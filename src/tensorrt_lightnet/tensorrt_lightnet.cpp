@@ -92,7 +92,7 @@ calculateAngle(double x1, double y1, double x2, double y2) {
  * @param shift The number of fractional bits in the point coordinates. Default value is 0.
  */
 inline
-void arrow(cv::Mat image, cv::Point pt1, cv::Point pt2, cv::Scalar color, int thickness = 1, int lineType = 8, int shift = 0)
+void arrow(cv::Mat image, cv::Point pt1, cv::Point pt2, cv::Scalar color, int thickness = 0, int lineType = 8, int shift = 0)
 {
   // Calculate the vector components between pt1 and pt2
   float vx = (float)(pt2.x - pt1.x);
@@ -492,7 +492,7 @@ namespace tensorrt_lightnet
    * @param names The names of the detected classes.
    */
   void TrtLightnet::drawBbox(cv::Mat &img, std::vector<BBoxInfo> bboxes, std::vector<std::vector<int>> &colormap, std::vector<std::string> names)
-  {
+  {    
     for (const auto& bbi : bboxes) {
       int id = bbi.classId;
       std::stringstream stream;
@@ -521,17 +521,18 @@ namespace tensorrt_lightnet
 	  std::stringstream stream_TLR;
 	  stream_TLR <<  std::fixed << std::setprecision(2) << int(deg);
 	  int xlen = bbi.box.x2 - bbi.box.x1;
+	  int ylen = bbi.box.y2 - bbi.box.y1;	  
 	  int xcenter = (bbi.box.x2 + bbi.box.x1)/2;
 	  int ycenter = (bbi.box.y2 + bbi.box.y1)/2;	  
-	  int xr  = xcenter+(int)(sin * xlen/2);
-	  int yr  = ycenter-(int)(cos * xlen/2);
+	  int xr  = xcenter+(int)(sin * ylen/5);
+	  int yr  = ycenter-(int)(cos * ylen/5);
 	  if (xlen > 12) {
 	    if (bbi.subClassId == 0) {
 	      int y_offset = 0;
-	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/8);
+	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/16);
 	    }
 	  }
-	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 16), 0, 0.5, color, 1);	  
+	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 24), 4, 1.0, color, 1);	  
 	}
       }
       if (bbi.keypoint.size() == 0) {
