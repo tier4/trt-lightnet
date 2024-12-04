@@ -838,6 +838,7 @@ void inferLightNetPipeline(
     }
   }
 
+
   // Draw visualizations if not suppressed
   if (!visualization_config.dont_show) {
     drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
@@ -906,7 +907,10 @@ CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, s
 	calibratedSensor.width = 2880;
 	calibratedSensor.height = 1860;
       }
-
+      if (get_width() && get_height()) {
+	calibratedSensor.width = get_width();
+	calibratedSensor.height = get_height();
+      }
       // If the current sensor matches the target camera name, store its information
       if (calibratedSensor.name == camera_name) {
 	targetCalibratedInfo = calibratedSensor;
