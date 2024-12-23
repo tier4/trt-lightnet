@@ -496,7 +496,7 @@ namespace tensorrt_lightnet
     for (const auto& bbi : bboxes) {
       int id = bbi.classId;
       std::stringstream stream;
-
+      if (names[id] == "none") continue;
       if (!names.empty()) {
 	stream << std::fixed << std::setprecision(2) << names[id] << "  " << bbi.prob;
       } else {
@@ -529,10 +529,10 @@ namespace tensorrt_lightnet
 	  if (xlen > 12) {
 	    if (bbi.subClassId == 0) {
 	      int y_offset = 0;
-	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/16);
+	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/8);
 	    }
 	  }
-	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 24), 4, 1.0, color, 1);	  
+	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 24), 1, 1.0, color, 1);	  
 	}
       }
       if (bbi.keypoint.size() == 0) {
@@ -834,15 +834,21 @@ namespace tensorrt_lightnet
 	      if (x3d > GRID_H || x3d < 0.0) continue;
 	      if (y3d < -2.5) continue;
 
+	      // Transform to BEV coordinates
+	      // \( x_{\text{bev}} = \frac{X}{\text{resolution}} + \frac{\text{BEV width}}{2} \)
+	      int x_bev = static_cast<int>(static_cast<int>(x3d));
+	      // \( y_{\text{bev}} = \frac{\text{BEV height}}{2} - \frac{Y}{\text{resolution}} \)
+	      //int y_bev = static_cast<int>(bevCenterY - Y / BEV_RESOLUTION);
+	      int y_bev = static_cast<int>(GRID_H - static_cast<int>(distance * gran_h));
 	      // Map the 3D point onto the 2D BEV map, applying the mask if available.
 	      if (masks_.size() > 0) {
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[0];
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[1];
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[2];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[0] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[0];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[1] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[1];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[2] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[2];
 	      } else {
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = 255;
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = 255;
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[0] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[1] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[2] = 255;
 	      }
 	    }
 	  }
