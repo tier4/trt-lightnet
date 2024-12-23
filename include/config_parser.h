@@ -361,3 +361,6 @@ get_sensor_config(void);
 
 std::string
 get_camera_name(void);
+
+std::string
+get_fswp_onnx_path(void);

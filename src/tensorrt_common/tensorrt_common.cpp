@@ -177,7 +177,7 @@ void TrtCommon::setup()
 	  ext += "-lastFP16";
 	}
       }
-      ext += "-batch" + std::to_string(batch_config_[0]) + ".engine";
+      ext += "-batch" + std::to_string(batch_config_[2]) + ".engine";
     }
     cache_engine_path.replace_extension(ext);
 
@@ -489,9 +489,6 @@ bool TrtCommon::buildEngineFromOnnx(
 
   const auto input = network->getInput(0);
   const auto input_dims = input->getDimensions();
-  const auto input_channel = input_dims.d[1];
-  const auto input_height = input_dims.d[2];
-  const auto input_width = input_dims.d[3];
   const auto input_batch = input_dims.d[0];
 
   if (input_batch > 1) {
@@ -502,19 +499,32 @@ bool TrtCommon::buildEngineFromOnnx(
     // Attention : below API is deprecated in TRT8.4
     builder->setMaxBatchSize(batch_config_.at(2));
   } else {
-    if (build_config_->profile_per_layer) {
-      auto profile = builder->createOptimizationProfile();
-      profile->setDimensions(
-        network->getInput(0)->getName(), nvinfer1::OptProfileSelector::kMIN,
-        nvinfer1::Dims4{batch_config_.at(0), input_channel, input_height, input_width});
-      profile->setDimensions(
-        network->getInput(0)->getName(), nvinfer1::OptProfileSelector::kOPT,
-        nvinfer1::Dims4{batch_config_.at(1), input_channel, input_height, input_width});
-      profile->setDimensions(
-        network->getInput(0)->getName(), nvinfer1::OptProfileSelector::kMAX,
-        nvinfer1::Dims4{batch_config_.at(2), input_channel, input_height, input_width});
-      config->addOptimizationProfile(profile);
+    auto opt_prof = builder->createOptimizationProfile();
+    const auto num_input_layers = network->getNbInputs();
+    for (std::int32_t i = 0; i < num_input_layers; i++) {
+      const auto input = network->getInput(i);
+      const auto input_dims = input->getDimensions();
+      const auto B = input_dims.d[0];      
+      if (B > 0) {
+	// Fixed batch size
+	batch_config_ = {B, B, B};
+	continue;
+      }
+
+      nvinfer1::Dims min_input_dims{input_dims};
+      nvinfer1::Dims opt_input_dims{input_dims};
+      nvinfer1::Dims max_input_dims{input_dims};
+      min_input_dims.d[0] = batch_config_[0];
+      opt_input_dims.d[0] = batch_config_[1];
+      max_input_dims.d[0] = batch_config_[2];
+      opt_prof->setDimensions(network->getInput(i)->getName(), nvinfer1::OptProfileSelector::kMIN,
+			      min_input_dims);
+      opt_prof->setDimensions(network->getInput(i)->getName(), nvinfer1::OptProfileSelector::kOPT,
+			      opt_input_dims);
+      opt_prof->setDimensions(network->getInput(i)->getName(), nvinfer1::OptProfileSelector::kMAX,
+			      max_input_dims);
     }
+    config->addOptimizationProfile(opt_prof);
   }
   if (precision_ == "int8" && calibrator_) {
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
@@ -539,8 +549,15 @@ bool TrtCommon::buildEngineFromOnnx(
   cudaError_t err;
   cudaDeviceProp device_prop;
   bool isAmperePlus = false;
+  err = cudaGetDeviceCount(&device_count);
+  if (err != cudaSuccess) {
+    logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to cudaGetDeviceCount");
+  }
   for (int id = 0; id < device_count; id++) {
     err = cudaGetDeviceProperties(&device_prop, id);
+    if (err != cudaSuccess) {
+      logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to cudaGetDeviceProperties");
+    }
     if (device_prop.major >= 8) {
       isAmperePlus = true; 
     }

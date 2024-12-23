@@ -35,6 +35,7 @@ file(GLOB_RECURSE sources
   src/sensor/CalibratedSensorParser.cpp
   src/sensor/SensorParser.cpp
   src/pcdUtils/pcd2image.cpp
+  src/fswp/fswp.cpp
   )
 
 # Create a shared library

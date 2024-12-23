@@ -28,6 +28,8 @@
 #include <cnpy.h>
 #include <pcd2image.hpp>
 #include <CalibratedSensorParser.h>
+#include <fswp/fswp.hpp>
+
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -215,6 +217,47 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
   }
 
   trt_lightnet->doNonMaximumSuppressionForSubnetBbox();
+}
+
+/**
+ * Performs fast face swapping on the input image using TensorRT LightNet and FaceSwapper models.
+ *
+ * @param trt_lightnet A shared pointer to a `tensorrt_lightnet::TrtLightnet` object used for detecting bounding boxes.
+ * @param fswp_model A shared pointer to a `fswp::FaceSwapper` object used for swapping faces and inpainting the image.
+ * @param image A reference to the `cv::Mat` object containing the input image. This image is modified in-place with the swapped faces.
+ * @param names A vector of strings representing class names corresponding to the detected bounding boxes.
+ * @param target A vector of strings representing the target class names to swap faces for. Only bounding boxes with these class names are processed.
+ * @param numWorks The number of parallel workers (not used in the current implementation).
+ */
+void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<fswp::FaceSwapper> fswp_model, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
+{
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
+  trt_lightnet->clearSubnetBbox();
+  int num = (int)bbox.size();
+
+  
+  std::vector<tensorrt_lightnet::BBoxInfo> fdet_bboxes;
+  for (int i = 0; i < num; i++) {
+      auto b = bbox[i];
+      if ((b.box.x2 - b.box.x1) < 32) {
+	continue;
+      }
+      if ((b.box.y2 - b.box.y1) < 32) {
+	continue;
+      }      
+      for (auto &t : target) {
+	if (t == names[b.classId]) {
+	  fdet_bboxes.push_back(b);
+	}
+      }
+  }
+  std::vector<fswp::BBox> fswp_bboxes(fdet_bboxes.size());
+  std::transform(fdet_bboxes.begin(), fdet_bboxes.end(), fswp_bboxes.begin(),
+		 [](const auto &boxinfo) {
+		   const auto &box = boxinfo.box;
+		   return fswp::BBox{box.x1, box.y1, box.x2, box.y2};
+		 });
+  image = fswp_model->inpaint(image, fswp_bboxes);  
 }
 
 /**
@@ -779,6 +822,7 @@ void inferLightNetPipeline(
 			   std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &subnet_trt_lightnets,
 			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &keypoint_trt_lightnets,
+			   std::shared_ptr<fswp::FaceSwapper> fswp_model,
 			   cv::Mat &image,
 			   VisualizationConfig visualization_config,
 			   VisualizationConfig subnet_visualization_config,
@@ -808,6 +852,11 @@ void inferLightNetPipeline(
     inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
   }
 
+  if (get_fswp_onnx_path() != "not-specified") {
+    inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
+  }
+
+  
   // Calculate entropy and save results if required
   if (get_calc_entropy_flg()) {
     trt_lightnet->calcEntropyFromSoftmax();
@@ -838,9 +887,10 @@ void inferLightNetPipeline(
     }
   }
 
-
+  
   // Draw visualizations if not suppressed
-  if (!visualization_config.dont_show) {
+  if (1) {
+    //  if (!visualization_config.dont_show) {
     drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
     if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
       drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
@@ -992,7 +1042,9 @@ main(int argc, char* argv[])
     std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
   //Subnet configuration
   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets;
-  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;  
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;
+  std::shared_ptr<fswp::FaceSwapper> fswp_model;
+  
   VisualizationConfig subnet_visualization_config;
   std::vector<std::string> target, keypoint_target;
   std::vector<std::string> bluron = get_bluron_names();
@@ -1043,7 +1095,13 @@ main(int argc, char* argv[])
 				     std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config));
     }
   }  
-  
+
+  if (get_fswp_onnx_path() != "not-specified") {
+    int bs = 8;
+    std::filesystem::path fswp_path(get_fswp_onnx_path());
+    fswp_model = std::make_shared<fswp::FaceSwapper>(fswp_path, build_config, bs, "fp16");
+    target = get_target_names();
+  }
   auto p2i = pcd2image::Pcd2image();
   CalibratedSensorInfo targetCalibratedInfo;
   if (get_lidar_range_image_flg()) {
@@ -1078,7 +1136,7 @@ main(int argc, char* argv[])
 	  } else {
 	    image = cv::imread(file.path(), cv::IMREAD_COLOR);
 	  }
-	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
+	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
 	  
 	  if (!visualization_config.dont_show) {
 	    if (image.rows > 1280 && image.cols > 1920) {
@@ -1095,7 +1153,7 @@ main(int argc, char* argv[])
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
       std::cout << "Inference from " << file.path() << std::endl;
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
-      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
@@ -1118,7 +1176,7 @@ main(int argc, char* argv[])
       std::ostringstream sout;
       sout << std::setfill('0') << std::setw(6) << count;	  
       std::string name = "frame_" + sout.str() + ".jpg";	              
-      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
       
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {

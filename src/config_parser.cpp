@@ -178,6 +178,7 @@ DEFINE_string(sensor_config, "not-specified",
 DEFINE_string(camera_name, "CAM_FRONT",
               "camera name for range image");
 
+DEFINE_string(fswp_onnx, "", "FaceSwapper ONNX Path");
 
 std::string
 get_onnx_path(void)
@@ -759,5 +760,10 @@ std::string
 get_camera_name(void)
 {
   return FLAGS_camera_name;
+}
+
+std::string get_fswp_onnx_path(void)
+{
+  return FLAGS_fswp_onnx;
 }
 
