@@ -555,7 +555,7 @@ bool TrtCommon::buildEngineFromOnnx(
   }
   for (int id = 0; id < device_count; id++) {
     err = cudaGetDeviceProperties(&device_prop, id);
-    if (err != cudaSuccess) {
+    if (err != cudaSuccess)  {
       logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to cudaGetDeviceProperties");
     }
     if (device_prop.major >= 8) {

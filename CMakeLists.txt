@@ -16,6 +16,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath -Wl,$ORIGIN")
 # CUDA settings
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
 
+
 # Include directories and library paths
 include_directories(/usr/local/cuda/include include)
 link_directories(/usr/local/cuda/lib64)
@@ -36,6 +37,7 @@ file(GLOB_RECURSE sources
   src/sensor/SensorParser.cpp
   src/pcdUtils/pcd2image.cpp
   src/fswp/fswp.cpp
+  src/preprocess.cu  
   )
 
 # Create a shared library

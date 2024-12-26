@@ -353,6 +353,9 @@ get_keypoint_names(void);
 bool
 get_smooth_depthmap_using_semseg(void);
 
+std::vector<int>
+get_road_ids(void);
+
 bool
 get_lidar_range_image_flg(void);
 
@@ -364,3 +367,6 @@ get_camera_name(void);
 
 std::string
 get_fswp_onnx_path(void);
+
+bool
+get_plot_circle_flg(void);

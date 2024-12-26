@@ -56,6 +56,7 @@ struct VisualizationConfig {
   std::vector<std::string> names; ///< Names of the classes for display.
   std::vector<cv::Vec3b> argmax2bgr; ///< Mapping from class indices to BGR colors for segmentation masks.
   std::vector<tensorrt_lightnet::Colormap> seg_colormap;
+  std::vector<int> road_ids;
 };
 
 template <typename ... Args>
@@ -127,34 +128,37 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
  * @param names The names of the classes corresponding to the detection outputs.
  * @param argmax2bgr A vector of BGR colors used for drawing segmentation masks.
  */
-void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<cv::Vec3b> &argmax2bgr)
+void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, VisualizationConfig visualization_config)
 {
   //preprocess
-  trt_lightnet->preprocess({image});
+  if (get_cuda_flg()) {
+    trt_lightnet->preprocess_gpu({image});
+  } else {
+    trt_lightnet->preprocess({image});
+  }
   //inference
+
   trt_lightnet->doInference();
 
-  if (get_smooth_depthmap_using_semseg()) {
-    trt_lightnet->smoothDepthmapFromRoadSegmentation();
-  }
   //postprocess
-#pragma omp parallel sections
-  {
-#pragma omp section
-    {  
-      trt_lightnet->makeBbox(image.rows, image.cols);
-    }
-#pragma omp section
-    {  	
-      trt_lightnet->makeMask(argmax2bgr);
-    }
-#pragma omp section
-    {
-      std::string depth_format = get_depth_format();      
-      trt_lightnet->makeDepthmap(depth_format);
-      trt_lightnet->makeKeypoint(image.rows, image.cols);
+  if (get_smooth_depthmap_using_semseg()) {
+    if (get_cuda_flg()) {
+      trt_lightnet->smoothDepthmapFromRoadSegmentationGpu(visualization_config.road_ids);
+    } else {
+      trt_lightnet->smoothDepthmapFromRoadSegmentation(visualization_config.road_ids);
     }
   }
+
+  trt_lightnet->makeBbox(image.rows, image.cols);
+  trt_lightnet->makeMask(visualization_config.argmax2bgr);
+  if (get_cuda_flg()) {
+    trt_lightnet->makeDepthmapGpu();
+  } else {
+    std::string depth_format = get_depth_format();      
+    trt_lightnet->makeDepthmap(depth_format);
+  }
+  trt_lightnet->makeKeypoint(image.rows, image.cols);
+
   Calibration calibdata = {
     .u0 = (float)(image.cols/2.0),
     .v0 = (float)(image.rows/2.0),
@@ -162,7 +166,12 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
     .fy = get_fy(),
     .max_distance = get_max_distance(),
   };
-  trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);  
+  if (get_cuda_flg()) {
+    trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata);
+  } else {
+    trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);
+  }
+
 }
 
 /**
@@ -362,7 +371,7 @@ void inferKeypointLightnets(
  * @param colormap A vector of vectors containing RGB values for coloring each class.
  * @param names A vector of class names used for labeling the detections.
  */
-void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names)
+void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names, std::vector<std::string> &target)
 {
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
   std::vector<cv::Mat> masks = trt_lightnet->getMask();
@@ -371,7 +380,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   for (const auto &mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, 0.45, 0.0, image);
+    cv::addWeighted(image, 1.0, resized, 0.2, 0.0, image);
     cv::imshow("mask", mask);
   }
   for (const auto &depth : depthmaps) {
@@ -393,6 +402,20 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
       cv::imshow("inconsistency", inconsitency_map);
     }    
   }
+
+if (target.size() > 0 ) {
+  if (get_plot_circle_flg()) {
+    Calibration calibdata = {
+      .u0 = (float)(image.cols/2.0),
+      .v0 = (float)(image.rows/2.0),
+      .fx = get_fx(),
+      .fy = get_fy(),
+      .max_distance = get_max_distance(),
+    };
+    trt_lightnet->plotCircleIntoBevmap(image.cols, image.rows, calibdata, names, target);
+  }
+ }  
+  
   
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
@@ -837,8 +860,7 @@ void inferLightNetPipeline(
   int numWorks = get_workers();
 
   // Perform inference with the main LightNet model
-  inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
-
+  inferLightnet(trt_lightnet, image, visualization_config);
   // Check and process subnet LightNets if applicable
   if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
     inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
@@ -856,7 +878,6 @@ void inferLightNetPipeline(
     inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
   }
 
-  
   // Calculate entropy and save results if required
   if (get_calc_entropy_flg()) {
     trt_lightnet->calcEntropyFromSoftmax();
@@ -886,12 +907,11 @@ void inferLightNetPipeline(
       writeCrossTaskInconsistency(trt_lightnet, dstPath.string(), filename);
     }
   }
-
-  
+ 
   // Draw visualizations if not suppressed
-  if (1) {
-    //  if (!visualization_config.dont_show) {
-    drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+  //if (1) {
+  if (!visualization_config.dont_show) {
+    drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, target);
     if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
       drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
     }
@@ -1021,7 +1041,8 @@ main(int argc, char* argv[])
     .colormap = get_colormap(),
     .names = get_names(),
     .argmax2bgr = getArgmaxToBgr(get_seg_colormap()),
-    .seg_colormap = get_seg_colormap()
+    .seg_colormap = get_seg_colormap(),
+    .road_ids = get_road_ids()
   };
   
   

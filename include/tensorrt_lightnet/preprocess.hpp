@@ -20,6 +20,7 @@
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 #include <curand.h>
+#include <tensorrt_lightnet/tensorrt_lightnet.hpp>
 
 namespace tensorrt_lightnet
 {
@@ -196,3 +197,11 @@ extern void argmax_gpu(
   unsigned char * dst, float * src, int d_w, int d_h, int s_w, int s_h, int s_c, int batch, cudaStream_t stream);
 }  // namespace tensorrt_lightnet
 #endif  // TENSORRT_LIGHTNET__PREPROCESS_HPP_
+
+extern void blobFromImageGpu(float *dst, unsigned char*src, int d_w, int d_h, int d_c,
+		      int s_w, int s_h, int s_c, float norm, cudaStream_t stream);
+
+extern void generateDepthmapGpu(unsigned char *depthmap, const float *buf, const unsigned char* colormap,
+				int width, int height, cudaStream_t stream);
+
+extern void smoothDepthmapGpu(float *depthmap, const int *argmax, const int depthWidth, const int depthHeight, const int segWidth, const int segHeight,  int* road_ids, int numRoadIds, cudaStream_t stream);

@@ -26,6 +26,9 @@
 #include <vector>
 #include <NvInfer.h>
 
+struct ucharRGB {
+  unsigned char r, g, b;
+};
 
 enum TLR_Color {
   TLR_GREEN = 0,
@@ -66,10 +69,17 @@ struct Calibration {
   float max_distance;
 };
 
-#define GRID_H 1280
-#define GRID_W 640
+#define GRID_H 640
+#define GRID_W 480
 //#define GRID_H 640
 //#define GRID_W 320
+
+extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
+				  int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, cudaStream_t stream);
+
+extern void mapArgmaxtoColorGpu(unsigned char *output, int *input, 
+				int width, int height, const ucharRGB *colorMap, cudaStream_t stream);
+
 
 /**
  * Configuration settings related to the model being used for inference.
@@ -416,6 +426,16 @@ public:
   void preprocess(const std::vector<cv::Mat> & images);
 
   /**
+   * @brief Preprocesses input images on the GPU for inference.
+   *
+   * This function prepares the input image data to be compatible with the model's input dimensions.
+   * It supports only a single batch of images and resizes the input to match the model's required dimensions.
+   *
+   * @param images A vector of input images (cv::Mat) to preprocess.
+   */
+  void preprocess_gpu(const std::vector<cv::Mat> &images);
+  
+  /**
    * Retrieves bounding boxes for a given image size.
    * @param imageH height of the image.
    * @param imageW width of the image.
@@ -437,6 +457,14 @@ public:
   void makeDepthmap(std::string &depth_format);
 
   /**
+   * @brief Generates depth maps using GPU-based processing.
+   *
+   * This function iterates through tensor bindings to locate depth map tensors,
+   * processes them using a GPU, and stores the resulting depth maps in a vector.
+   */  
+  void makeDepthmapGpu(void);
+  
+  /**
    * @brief Generates a bird's-eye view map (BEV map) by back-projecting a depth map onto a 2D grid.
    *
    * This function creates a back-projected bird's-eye view map using the input depth map data from the 
@@ -450,6 +478,23 @@ public:
    */  
   void makeBackProjection(const int im_w, const int im_h, const Calibration calibdata);
 
+  /**
+   * @brief Creates a bird's-eye view (BEV) map from depth maps using GPU-based back projection.
+   *
+   * This function processes depth map tensors and applies GPU-based back projection
+   * to generate a BEV map using calibration data and masks.
+   *
+   * @param im_w Image width of the original input.
+   * @param im_h Image height of the original input.
+   * @param calibdata Calibration data required for back projection.
+   */  
+  void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata);
+
+  /**
+   * Retrieves the generated BEV map.
+   * 
+   * @return BEV map.
+   */      
   cv::Mat getBevMap(void);
 
   /**
@@ -459,8 +504,18 @@ public:
    * by averaging distances over regions identified as roads or similar surfaces 
    * in the segmentation map. The smoothed depth values are then applied back to the depth map.
    */
-  void smoothDepthmapFromRoadSegmentation(void);
+  void smoothDepthmapFromRoadSegmentation(std::vector<int> road_ids);
 
+  /**
+   * @brief Smooths a depth map using road segmentation on the GPU.
+   *
+   * This function identifies relevant tensors for depth maps and segmentation,
+   * then applies GPU-based smoothing of the depth map using road segmentation labels.
+   *
+   * @param road_ids A vector of road segmentation label IDs to identify road regions.
+   */  
+  void smoothDepthmapFromRoadSegmentationGpu(std::vector<int> road_ids);
+  
   /**
    * @brief Calculates the median distance from a region in a buffer.
    *
@@ -476,6 +531,20 @@ public:
    */  
   float get_meadian_dist(const float *buf, int outputW, float scale_w, float scale_h, const BBox b);
 
+  /**
+   * @brief Plots circles representing detected objects onto the BEV map.
+   *
+   * This function uses bounding box data and calibration parameters to determine
+   * the 3D positions of objects and plots corresponding circles on the BEV map.
+   *
+   * @param im_w Width of the original input image.
+   * @param im_h Height of the original input image.
+   * @param calibdata Calibration data required for mapping coordinates.
+   * @param names Vector of class names for detected objects.
+   * @param target Vector of target object classes to exclude from plotting.
+   */
+  void plotCircleIntoBevmap(const int im_w, const int im_h, const Calibration calibdata, std::vector<std::string> &names, std::vector<std::string> &target);
+  
   /**
    * @brief Adds bounding boxes into a bird's-eye view (BEV) map.
    *
@@ -814,9 +883,47 @@ public:
   /**
    * Stores keypoints detected by the primary network.
    */  
-  std::vector<KeypointInfo> keypoint_;  
+  std::vector<KeypointInfo> keypoint_;
+
+  /**
+   * @brief Host-side pointer for storing image data during preprocessing.
+   */
+  unsigned char* h_img_;
+
+  /**
+   * @brief Device-side pointer for storing image data after transferring from the host.
+   */
+  unsigned char* d_img_;
+
+  /**
+   * @brief Device-side unique pointer for storing the depth map generated on the GPU.
+   */
+  CudaUniquePtr<unsigned char[]> d_depthmap_;
+
+  /**
+   * @brief Device-side unique pointer for storing the mask data used in back projection or segmentation.
+   */
+  CudaUniquePtr<unsigned char[]> d_mask_;
+
+  /**
+   * @brief Device-side unique pointer for storing the bird's-eye view (BEV) map.
+   */
+  CudaUniquePtr<unsigned char[]> d_bevmap_;
+
+  /**
+   * @brief Device-side unique pointer for storing the color map used for visualizing depth or segmentation data.
+   */
+  CudaUniquePtr<unsigned char[]> d_depth_colormap_;
+
+  /**
+   * @brief Device-side unique pointer for storing road segment IDs used in smoothing or segmentation tasks.
+   */
+  CudaUniquePtr<int[]> d_road_ids_;
+
+  CudaUniquePtr<ucharRGB[]> d_colorMap_;
 };
 
 }  // namespace tensorrt_lightnet
 
 #endif  // TENSORRT_LIGHTNET__TENSORRT_LIGHTNET_HPP_
+

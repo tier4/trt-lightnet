@@ -168,6 +168,8 @@ DEFINE_string(keypoint_names, "not-specified",
 
 DEFINE_bool(smooth, false,
             "[OPTIONAL] Flag to depthmap using semantic segmentation");
+DEFINE_string(road_ids, "5,8,9,10,11,12",
+              "road segment id");
 
 DEFINE_bool(lidar, false,
             "[OPTIONAL] Flag to inference for lidar range image");
@@ -178,7 +180,10 @@ DEFINE_string(sensor_config, "not-specified",
 DEFINE_string(camera_name, "CAM_FRONT",
               "camera name for range image");
 
-DEFINE_string(fswp_onnx, "", "FaceSwapper ONNX Path");
+DEFINE_string(fswp_onnx, "not-specified", "FaceSwapper ONNX Path");
+
+DEFINE_bool(plot_circle, false,
+            "[OPTIONAL] Flag to plot circle to BEV map");
 
 std::string
 get_onnx_path(void)
@@ -744,6 +749,28 @@ get_smooth_depthmap_using_semseg(void)
   return FLAGS_smooth;
 }
 
+std::vector<int>
+get_road_ids(void)
+{
+  std::string road_idsString = FLAGS_road_ids;
+  std::vector<int> road_ids;
+  if (road_idsString != "not-specified") {
+    while (!road_idsString.empty()) {
+      size_t npos = road_idsString.find_first_of(',');
+      if (npos != std::string::npos) {
+	int value = (int)std::stoi(trim(road_idsString.substr(0, npos)));
+	road_ids.push_back(value);
+	road_idsString.erase(0, npos + 1);
+      } else {
+	int value = (int)std::stoi(trim(road_idsString));
+	road_ids.push_back(value);
+	break;
+      }      
+    }    
+  }
+  return road_ids;
+}
+
 bool
 get_lidar_range_image_flg(void)
 {
@@ -767,3 +794,8 @@ std::string get_fswp_onnx_path(void)
   return FLAGS_fswp_onnx;
 }
 
+bool
+get_plot_circle_flg(void)
+{
+  return FLAGS_plot_circle;
+}
