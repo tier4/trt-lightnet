@@ -370,3 +370,6 @@ get_fswp_onnx_path(void);
 
 bool
 get_plot_circle_flg(void);
+
+float
+get_blending(void);

@@ -380,7 +380,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   for (const auto &mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, 0.2, 0.0, image);
+    cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
     cv::imshow("mask", mask);
   }
   for (const auto &depth : depthmaps) {

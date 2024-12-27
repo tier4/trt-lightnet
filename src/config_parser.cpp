@@ -185,6 +185,8 @@ DEFINE_string(fswp_onnx, "not-specified", "FaceSwapper ONNX Path");
 DEFINE_bool(plot_circle, false,
             "[OPTIONAL] Flag to plot circle to BEV map");
 
+DEFINE_double(blending, 0.5, "[OPTIONAL] blending parameter for segmentation mask ");
+
 std::string
 get_onnx_path(void)
 {
@@ -798,4 +800,10 @@ bool
 get_plot_circle_flg(void)
 {
   return FLAGS_plot_circle;
+}
+
+float
+get_blending(void)
+{
+  return (float)FLAGS_blending;
 }
