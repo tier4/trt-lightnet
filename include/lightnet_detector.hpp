@@ -31,6 +31,10 @@
 #include <fswp/fswp.hpp>
 #include <omp.h>
 
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/image.hpp>
+
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -1056,6 +1060,43 @@ CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, s
   return targetCalibratedInfo;
 }
 
+namespace trt_lightnet {
+class TrtLightnetNode : public rclcpp::Node {
+ public:
+  explicit TrtLightnetNode(const rclcpp::NodeOptions& node_options);
+
+ private:
+  // ModelConfig model_config_;
+  VisualizationConfig visualization_config_;
+  // InferenceConfig inference_config_;
+  PathConfig path_config_;
+  // ModelConfig subnet_model_config_;
+  VisualizationConfig subnet_visualization_config_;
+
+  std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet_;
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets_;
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets_;
+  std::shared_ptr<fswp::FaceSwapper> fswp_model_;
+  std::vector<std::string> target_;
+  std::vector<std::string> keypoint_target_;
+  std::vector<std::string> bluron_;
+  int numWorks_;
+
+  std::string create_temp_flagfile(const std::string& original_flagfile);
+  void onCompressedImage(
+      const sensor_msgs::msg::CompressedImage::ConstSharedPtr input_compressed_image_msg);
+
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_image_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr raw_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr mask_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bev_image_pub_;
+  std::string encoding_;
+};
+
+}  // namespace trt_lightnet
+
+/*
 int
 main(int argc, char* argv[])
 {
@@ -1297,3 +1338,4 @@ main(int argc, char* argv[])
 
   return 0;
 }
+*/

@@ -1,0 +1,14 @@
+<launch>
+  <!-- <arg name="input_topic_name" default="/input/compressed_image"/> -->
+  <arg name="input_topic_name" default="/sensing/camera/camera0/image_raw/compressed"/>
+  <arg name="output_topic_name" default="/output/raw_image"/>
+  <!-- <arg name="param_file" default="$(find-pkg-share trt_lightnet)/configs/trt_lightnet.param.yaml"/> -->
+
+  <node pkg="trt_lightnet" exec="lightnet_node" name="lightnet_node"  output="screen">
+    <param name="config_path" value="$(find-pkg-share trt_lightnet)/configs/"/>
+    <param name="flagfile" value="$(find-pkg-share trt_lightnet)/configs/CES25/CES_DEMOv1.txt"/>
+    <remap from="~/input/compressed_image" to="$(var input_topic_name)"/>
+    <remap from="~/output/raw_image" to="$(var output_topic_name)"/>
+    <!-- <param from="$(var param_file)" allow_substs="true"/> -->
+  </node>
+</launch>

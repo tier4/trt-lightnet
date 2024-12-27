@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10) # Recommended version
-project(trt-lightnet VERSION 1.0 LANGUAGES CXX CUDA)
+project(trt_lightnet VERSION 1.0 LANGUAGES CXX CUDA)
 
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
@@ -27,6 +27,10 @@ find_package(Eigen3 REQUIRED)
 
 # Define compile-time constants
 add_compile_options(-D LIGHTNET_STANDALONE)
+
+# Find ROS 2 libraries
+find_package(ament_cmake_auto REQUIRED)
+ament_auto_find_build_dependencies()
 
 # Gather source files
 file(GLOB_RECURSE sources
@@ -56,18 +60,24 @@ target_include_directories(detector PRIVATE
   )
 
 # Create an executable
-add_executable(trt-lightnet
+# add_executable(trt_lightnet
+#   src/lightnet_detector.cpp
+#   src/config_parser.cpp
+#   ${sources}
+#   )
+ament_auto_add_library(trt_lightnet SHARED
   src/lightnet_detector.cpp
   src/config_parser.cpp
   ${sources}
-  )
-target_include_directories(trt-lightnet PRIVATE
+)
+
+target_include_directories(trt_lightnet PRIVATE
   ${EIGEN3_INCLUDE_DIR}  
   include
   include/pcdUtils
   include/sensor
   )
-target_link_libraries(trt-lightnet
+target_link_libraries(trt_lightnet
   ${OpenCV_LIBS}
   nvinfer nvinfer_plugin nvparsers nvonnxparser
   cuda cudart
@@ -77,4 +87,15 @@ target_link_libraries(trt-lightnet
   z
   dl
   "stdc++fs"
+  )
+  
+rclcpp_components_register_node(trt_lightnet
+  PLUGIN "trt_lightnet::TrtLightnetNode"
+  EXECUTABLE lightnet_node
+  )
+
+ament_auto_package(INSTALL_TO_SHARE
+  launch
+  configs
+  data
   )
