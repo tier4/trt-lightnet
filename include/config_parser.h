@@ -373,3 +373,6 @@ get_plot_circle_flg(void);
 
 float
 get_blending(void);
+
+bool
+profile_verbose(void);

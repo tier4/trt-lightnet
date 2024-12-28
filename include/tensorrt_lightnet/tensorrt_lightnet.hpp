@@ -71,8 +71,6 @@ struct Calibration {
 
 #define GRID_H 640
 #define GRID_W 480
-//#define GRID_H 640
-//#define GRID_W 320
 
 extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
 				  int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, cudaStream_t stream);

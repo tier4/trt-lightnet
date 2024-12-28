@@ -187,6 +187,9 @@ DEFINE_bool(plot_circle, false,
 
 DEFINE_double(blending, 0.5, "[OPTIONAL] blending parameter for segmentation mask ");
 
+DEFINE_bool(verbose, false,
+            "[OPTIONAL] Flag to profile verbose");
+
 std::string
 get_onnx_path(void)
 {
@@ -806,4 +809,11 @@ float
 get_blending(void)
 {
   return (float)FLAGS_blending;
+}
+
+
+bool
+profile_verbose(void)
+{
+  return FLAGS_verbose;
 }

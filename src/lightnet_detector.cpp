@@ -377,6 +377,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   std::vector<cv::Mat> masks = trt_lightnet->getMask();
   std::vector<cv::Mat> depthmaps = trt_lightnet->getDepthmap();
   std::vector<tensorrt_lightnet::KeypointInfo> keypoint = trt_lightnet->getKeypoints();
+
   for (const auto &mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
@@ -403,26 +404,26 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
     }    
   }
 
-if (target.size() > 0 ) {
-  if (get_plot_circle_flg()) {
-    Calibration calibdata = {
-      .u0 = (float)(image.cols/2.0),
-      .v0 = (float)(image.rows/2.0),
-      .fx = get_fx(),
-      .fy = get_fy(),
-      .max_distance = get_max_distance(),
-    };
-    trt_lightnet->plotCircleIntoBevmap(image.cols, image.rows, calibdata, names, target);
+  if (target.size() > 0 ) {
+    if (get_plot_circle_flg()) {
+      Calibration calibdata = {
+	.u0 = (float)(image.cols/2.0),
+	.v0 = (float)(image.rows/2.0),
+	.fx = get_fx(),
+	.fy = get_fy(),
+	.max_distance = get_max_distance(),
+      };
+      trt_lightnet->plotCircleIntoBevmap(image.cols, image.rows, calibdata, names, target);
+    }
+  }  
+
+  if (keypoint.size() > 0) {
+    trt_lightnet->drawKeypoint(image, keypoint);
   }
- }  
-  
-  
+    
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
     cv::imshow("bevmap", bevmap);
-  }
-  if (keypoint.size() > 0) {
-    trt_lightnet->drawKeypoint(image, keypoint);
   }
 }
 
@@ -858,24 +859,58 @@ void inferLightNetPipeline(
 			   std::string cam_name
 			   ) {
   int numWorks = get_workers();
-
+  std::chrono::high_resolution_clock::time_point start, end;
+  if (profile_verbose()) {
+    start = std::chrono::high_resolution_clock::now();
+  }  
   // Perform inference with the main LightNet model
   inferLightnet(trt_lightnet, image, visualization_config);
+  if (profile_verbose()) {      
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "##inferLightnet: " << duration.count() << " ms " << std::endl;
+  }
+
+  
   // Check and process subnet LightNets if applicable
   if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }      
     inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
     if (!bluron.empty()) {
       blurObjectFromSubnetBbox(trt_lightnet, image);
     }
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "##inferSubnetLightnets: " << duration.count() << " ms " << std::endl;
+    }    
   }
 
   // Check and process keypoint LightNets if applicable
   if (get_keypoint_onnx_path() != "not-specified" && !keypoint_trt_lightnets.empty()) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }      
     inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "##inferKeypointLightnets: " << duration.count() << " ms " << std::endl;
+    }        
   }
 
   if (get_fswp_onnx_path() != "not-specified") {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }      
     inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "##inferFastFaceSwapper: " << duration.count() << " ms " << std::endl;
+    }        
   }
 
   // Calculate entropy and save results if required
@@ -1134,6 +1169,8 @@ main(int argc, char* argv[])
     }
     targetCalibratedInfo = getTargetCalibratedInfo(caliibrationInfoPath, get_camera_name());
   }
+  std::chrono::high_resolution_clock::time_point start, end;
+  
   if (!path_config.t4dataset_directory.empty()) {
     std::cout << path_config.t4dataset_directory << std::endl;
     fs::path t4_dataset(path_config.t4dataset_directory);
@@ -1192,6 +1229,9 @@ main(int argc, char* argv[])
     }
     while (1) {
       cv::Mat image;
+      if (profile_verbose()) {
+	start = std::chrono::high_resolution_clock::now();
+      }
       video >> image;
       if (image.empty()) break;
       std::ostringstream sout;
@@ -1208,7 +1248,12 @@ main(int argc, char* argv[])
 	  break;
 	}
       }
-      count++;      
+      count++;
+      if (profile_verbose()) {      
+	end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	std::cout << "#Duration: " << duration.count() << " ms " << " FPS: " << 1000/duration.count()  << std::endl;
+      }
     }
   }  
   
