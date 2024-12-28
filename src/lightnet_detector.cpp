@@ -29,6 +29,7 @@
 #include <pcd2image.hpp>
 #include <CalibratedSensorParser.h>
 #include <fswp/fswp.hpp>
+#include <omp.h>
 
 /**
  * Configuration for input and output paths used during inference.
@@ -119,6 +120,47 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
 }  
 
 /**
+ * Performs fast face swapping on the input image using TensorRT LightNet and FaceSwapper models.
+ *
+ * @param trt_lightnet A shared pointer to a `tensorrt_lightnet::TrtLightnet` object used for detecting bounding boxes.
+ * @param fswp_model A shared pointer to a `fswp::FaceSwapper` object used for swapping faces and inpainting the image.
+ * @param image A reference to the `cv::Mat` object containing the input image. This image is modified in-place with the swapped faces.
+ * @param names A vector of strings representing class names corresponding to the detected bounding boxes.
+ * @param target A vector of strings representing the target class names to swap faces for. Only bounding boxes with these class names are processed.
+ * @param numWorks The number of parallel workers (not used in the current implementation).
+ */
+void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<fswp::FaceSwapper> fswp_model, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
+{
+  trt_lightnet->removeAspectRatioBoxes(names, target, 1/4.0);  
+  trt_lightnet->removeContainedBBoxes(names, target);
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
+  int num = (int)bbox.size();
+
+  std::vector<tensorrt_lightnet::BBoxInfo> fdet_bboxes;
+  for (int i = 0; i < num; i++) {
+      auto b = bbox[i];
+      if ((b.box.x2 - b.box.x1) < 32) {
+	continue;
+      }
+      if ((b.box.y2 - b.box.y1) < 32) {
+	continue;
+      }      
+      for (auto &t : target) {
+	if (t == names[b.classId]) {
+	  fdet_bboxes.push_back(b);
+	}
+      }
+  }
+  std::vector<fswp::BBox> fswp_bboxes(fdet_bboxes.size());
+  std::transform(fdet_bboxes.begin(), fdet_bboxes.end(), fswp_bboxes.begin(),
+		 [](const auto &boxinfo) {
+		   const auto &box = boxinfo.box;
+		   return fswp::BBox{box.x1, box.y1, box.x2, box.y2};
+		 });
+  image = fswp_model->inpaint(image, fswp_bboxes);  
+}
+
+/**
  * Performs inference on an image using a TensorRT LightNet model, processes the output to get bounding boxes
  * segmentation and depth. This function encapsulates the preprocessing, inference, and postprocessing steps.
  * 
@@ -128,7 +170,7 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
  * @param names The names of the classes corresponding to the detection outputs.
  * @param argmax2bgr A vector of BGR colors used for drawing segmentation masks.
  */
-void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, VisualizationConfig visualization_config)
+void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, VisualizationConfig visualization_config, std::shared_ptr<fswp::FaceSwapper> fswp_model, std::vector<std::string> &target)
 {
   //preprocess
   if (get_cuda_flg()) {
@@ -150,28 +192,50 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
   }
 
   trt_lightnet->makeBbox(image.rows, image.cols);
-  trt_lightnet->makeMask(visualization_config.argmax2bgr);
-  if (get_cuda_flg()) {
-    trt_lightnet->makeDepthmapGpu();
-  } else {
-    std::string depth_format = get_depth_format();      
-    trt_lightnet->makeDepthmap(depth_format);
-  }
-  trt_lightnet->makeKeypoint(image.rows, image.cols);
 
-  Calibration calibdata = {
-    .u0 = (float)(image.cols/2.0),
-    .v0 = (float)(image.rows/2.0),
-    .fx = get_fx(),
-    .fy = get_fy(),
-    .max_distance = get_max_distance(),
-  };
-  if (get_cuda_flg()) {
-    trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata);
-  } else {
-    trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);
-  }
+#pragma omp parallel sections
+  {
+#pragma omp section
+    {
+      trt_lightnet->makeMask(visualization_config.argmax2bgr);
+      if (get_cuda_flg()) {
+	trt_lightnet->makeDepthmapGpu();
+      } else {
+	std::string depth_format = get_depth_format();      
+	trt_lightnet->makeDepthmap(depth_format);
+      }
+      trt_lightnet->makeKeypoint(image.rows, image.cols);
 
+      Calibration calibdata = {
+	.u0 = (float)(image.cols/2.0),
+	.v0 = (float)(image.rows/2.0),
+	.fx = get_fx(),
+	.fy = get_fy(),
+	.max_distance = get_max_distance(),
+      };
+      if (get_cuda_flg()) {
+	trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata);
+      } else {
+	trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);
+      }
+    }
+#pragma omp section
+    {
+      if (get_fswp_onnx_path() != "not-specified") {
+	std::chrono::high_resolution_clock::time_point start, end;
+	if (profile_verbose()) {
+	  start = std::chrono::high_resolution_clock::now();
+	}
+      
+	inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
+	if (profile_verbose()) {      
+	  end = std::chrono::high_resolution_clock::now();
+	  std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	  std::cout << "##inferFastFaceSwapper: " << duration.count() << " ms " << std::endl;
+	}        
+      }
+    }
+  }
 }
 
 /**
@@ -228,46 +292,6 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
   trt_lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
 
-/**
- * Performs fast face swapping on the input image using TensorRT LightNet and FaceSwapper models.
- *
- * @param trt_lightnet A shared pointer to a `tensorrt_lightnet::TrtLightnet` object used for detecting bounding boxes.
- * @param fswp_model A shared pointer to a `fswp::FaceSwapper` object used for swapping faces and inpainting the image.
- * @param image A reference to the `cv::Mat` object containing the input image. This image is modified in-place with the swapped faces.
- * @param names A vector of strings representing class names corresponding to the detected bounding boxes.
- * @param target A vector of strings representing the target class names to swap faces for. Only bounding boxes with these class names are processed.
- * @param numWorks The number of parallel workers (not used in the current implementation).
- */
-void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<fswp::FaceSwapper> fswp_model, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
-{
-  trt_lightnet->removeAspectRatioBoxes(names, target, 1/4.0);  
-  trt_lightnet->removeContainedBBoxes(names, target);
-  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
-  int num = (int)bbox.size();
-
-  std::vector<tensorrt_lightnet::BBoxInfo> fdet_bboxes;
-  for (int i = 0; i < num; i++) {
-      auto b = bbox[i];
-      if ((b.box.x2 - b.box.x1) < 32) {
-	continue;
-      }
-      if ((b.box.y2 - b.box.y1) < 32) {
-	continue;
-      }      
-      for (auto &t : target) {
-	if (t == names[b.classId]) {
-	  fdet_bboxes.push_back(b);
-	}
-      }
-  }
-  std::vector<fswp::BBox> fswp_bboxes(fdet_bboxes.size());
-  std::transform(fdet_bboxes.begin(), fdet_bboxes.end(), fswp_bboxes.begin(),
-		 [](const auto &boxinfo) {
-		   const auto &box = boxinfo.box;
-		   return fswp::BBox{box.x1, box.y1, box.x2, box.y2};
-		 });
-  image = fswp_model->inpaint(image, fswp_bboxes);  
-}
 
 /**
  * @brief Performs keypoint inference using multiple subnetworks on a given image.
@@ -868,7 +892,7 @@ void inferLightNetPipeline(
     start = std::chrono::high_resolution_clock::now();
   }  
   // Perform inference with the main LightNet model
-  inferLightnet(trt_lightnet, image, visualization_config);
+  inferLightnet(trt_lightnet, image, visualization_config, fswp_model, target);
   if (profile_verbose()) {      
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -902,18 +926,6 @@ void inferLightNetPipeline(
       end = std::chrono::high_resolution_clock::now();
       std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
       std::cout << "##inferKeypointLightnets: " << duration.count() << " ms " << std::endl;
-    }        
-  }
-
-  if (get_fswp_onnx_path() != "not-specified") {
-    if (profile_verbose()) {
-      start = std::chrono::high_resolution_clock::now();
-    }      
-    inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
-    if (profile_verbose()) {      
-      end = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-      std::cout << "##inferFastFaceSwapper: " << duration.count() << " ms " << std::endl;
     }        
   }
 

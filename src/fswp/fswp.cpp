@@ -131,6 +131,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
   std::vector<cv::Mat> crops;
   std::vector<cv::Rect> crop_rois;
   std::vector<cv::Rect> bbox_rois;
+
   for (std::size_t i = 0; i < num_bboxes; i++) {
     const auto &bbox = bboxes[i];
     const auto w = bbox.x2 - bbox.x1;
@@ -139,6 +140,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     const auto yc = (bbox.y1 + bbox.y2) / 2.0f;
     const cv::Rect bbox_roi = cv::Rect(bbox.x1, bbox.y1, w, h);
     bbox_rois.push_back(bbox_roi);
+
 
     // Create crop
     const auto crop_size = 1.4f * std::max(w, h);
@@ -164,7 +166,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     crops.push_back(crop);
     masks.push_back(mask);
   }
-
+  
   std::vector<cv::Mat> outs;
   std::size_t batch_size = 0;
   for (std::size_t i = 0; i < num_bboxes; i += batch_size) {
@@ -193,10 +195,11 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
                                      batch_masks_flatten.size() * sizeof(float),
                                      cudaMemcpyHostToDevice, *stream_));
 
+   
     // Infer
     std::vector<void *> buffs{input_d_[0].get(), input_d_[1].get(), output_d_[0].get()};
     trt_common_->enqueueV2(buffs.data(), *stream_, nullptr);
-
+    
     // GPU -> Host
     const auto output_dims = trt_common_->getBindingDimensions(2);
     const std::size_t sample_output_size = std::accumulate(
@@ -208,9 +211,8 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     cudaStreamSynchronize(*stream_);
 
     // NCHW -> NHWC
-    float *nchw = new float[batch_output_size];
-    float *nhwc = new float[batch_output_size];
-    std::memcpy(nchw, output_h_[0].get(), batch_output_size * sizeof(float));
+    unsigned char *nhwc = new unsigned char[batch_output_size];    
+    float *buf = output_h_[0].get();    
     const std::size_t size_chw = input_image_c * input_image_h * input_image_w;
     const std::size_t size_hw = input_image_h * input_image_w;
     const std::size_t size_wc = input_image_w * input_image_c;
@@ -219,27 +221,22 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
         for (std::size_t h_idx = 0; h_idx < input_image_h; h_idx++) {
           for (std::size_t w_idx = 0; w_idx < input_image_w; w_idx++) {
             const std::size_t nchw_idx =
-                b_idx * size_chw + c_idx * size_hw + h_idx * input_image_w + w_idx;
+	      b_idx * size_chw + c_idx * size_hw + h_idx * input_image_w + w_idx;
             const std::size_t nhwc_idx =
-                b_idx * size_chw + h_idx * size_wc + w_idx * input_image_c + c_idx;
-            nhwc[nhwc_idx] = nchw[nchw_idx];
+	      b_idx * size_chw + h_idx * size_wc + w_idx * input_image_c + (input_image_c-1-c_idx);
+            nhwc[nhwc_idx] =  (unsigned char)(buf[nchw_idx] * 127.5 + 127.5); //RGB2BGR + Denormalization
           }
         }
       }
     }
-    delete[] nchw;
 
-    // Denormalize outputs
     for (std::size_t j = 0; j < batch_size; j++) {
-      float *buff = nhwc + (sample_output_size * j);
-      cv::Mat out(input_size, CV_32FC3);
-      std::memcpy(out.data, buff, sample_output_size * sizeof(float));
-      out.convertTo(out, CV_32FC3, 127.5, 127.5);
-      out.convertTo(out, CV_8UC3);
-      cv::cvtColor(out, out, cv::COLOR_RGB2BGR);
+      unsigned char *buff = nhwc + (sample_output_size * j);
+      cv::Mat out(input_size, CV_8UC3);      
+      std::memcpy(out.data, buff, sample_output_size * sizeof (unsigned char));
       outs.push_back(out);
     }
-    delete[] nhwc;
+    delete[] nhwc;    
   }
   assert(outs.size() == num_bboxes);
 
@@ -253,6 +250,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     cv::resize(out, out, crop_roi.size());
     out(bbox_roi - crop_roi.tl()).copyTo(inpainted(bbox_roi - image_roi.tl()));
   }
+  
   return inpainted;
 }
 
