@@ -317,26 +317,22 @@ void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float 
 
 }
 
-__global__ void mapArgmaxToColorKernel(unsigned char *output, const int *input, int width, int height, const ucharRGB *colorMap)
+__global__ void mapArgmaxToColorKernel(int N, unsigned char *output, const int *input, int width, int height, const ucharRGB *colorMap)
 {
-  int x = blockIdx.x * blockDim.x + threadIdx.x;
-  int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if (x < width && y < height) {
+  int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+  if (index >= N) return;
+  int x = index % width;
+  int y = index / width;  
+    if (x < width && y < height) {
     int idx = y * width + x;
     int classId = (int)(input[idx]);
-    //int classId = __float2int_rz(input[idx]);    
-    if (classId > 0) {
-      printf("%d,", classId);
-    }
-	
     ucharRGB color = colorMap[classId];
     //NHWC
-    idx = y * width * 3 + x * 3 + 0;    
+    idx = y * width * 3 + x * 3 + 2;    
     output[idx] = color.b;
     idx = y * width * 3 + x * 3 + 1;    
     output[idx] = color.g;
-    idx = y * width * 3 + x * 3 + 2;    
+    idx = y * width * 3 + x * 3 + 0;    
     output[idx] = color.r;    
   }
 }
@@ -346,7 +342,7 @@ void mapArgmaxtoColorGpu(unsigned char *output, int *input,
 {
   int N =  width * height;
 
-  mapArgmaxToColorKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(output, input,
+  mapArgmaxToColorKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, output, input,
 								 width, height, colorMap);
 
 }

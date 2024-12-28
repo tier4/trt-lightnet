@@ -1300,7 +1300,16 @@ namespace tensorrt_lightnet
     int mask_size = image.cols * image.rows * 3;
     if (!d_resized_mask_) {
       d_resized_mask_  = cuda_utils::make_unique<unsigned char[]>(mask_size);
+    }
+    if (!d_mask_) {
+      d_mask_ = cuda_utils::make_unique<unsigned char[]>(mask_size);
     }    
+    if (!d_img_) {
+      CHECK_CUDA_ERROR(cudaMalloc((void **)&d_img_, sizeof(unsigned char) * mask_size));
+    }
+    memcpy(h_img_, image.data, mask_size * sizeof(unsigned char));
+    // Copy image data from pinned memory to device memory asynchronously
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_img_, h_img_, mask_size * sizeof(unsigned char), cudaMemcpyHostToDevice, *stream_));    
     for (const auto &mask : masks_) {
       if (masks_.size() == 1) {
 	resizeNearestNeighborGpu(d_resized_mask_.get(), d_mask_.get(),
@@ -1754,6 +1763,26 @@ namespace tensorrt_lightnet
 	std::string name = trt_common_->getIOTensorName(i);
 	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
 	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+
+	  
+	  std::vector<ucharRGB> colorMap(argmax2bgr.size());
+	  for (size_t i = 0; i < argmax2bgr.size(); ++i) {
+	    colorMap[i] = {argmax2bgr[i][0], argmax2bgr[i][1], argmax2bgr[i][2]};
+	  }
+	  if (!d_colorMap_) {
+	    d_colorMap_ = cuda_utils::make_unique<ucharRGB[]>(colorMap.size());	    
+	  }
+	  if (!d_mask_) {
+	    d_mask_ = cuda_utils::make_unique<unsigned char[]>(outputW * outputH * 3);
+	  }
+	  cudaMemcpy(d_colorMap_.get(), colorMap.data(), colorMap.size() * sizeof(ucharRGB), cudaMemcpyHostToDevice);	  
+	  mapArgmaxtoColorGpu(d_mask_.get(), (int *)output_d_.at(i-1).get(), outputW, outputH, d_colorMap_.get(), *stream_);
+	  cudaMemcpy(mask.data, d_mask_.get(), outputW * outputH * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost);	  	  
+	  cudaStreamSynchronize(*stream_);
+	  masks_.push_back(mask);
+	  break;
+	  
+
 	  const int *buf = (int *)output_h_.at(i-1).get();
 	  for (int y = 0; y < outputH; y++) {
 	    int stride = outputW * y;
