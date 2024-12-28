@@ -379,9 +379,13 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   std::vector<tensorrt_lightnet::KeypointInfo> keypoint = trt_lightnet->getKeypoints();
 
   for (const auto &mask : masks) {
-    cv::Mat resized;
-    cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
+    if (get_cuda_flg()) {
+      trt_lightnet->blendSegmentationGpu(image, 1.0, get_blending(), 0.0);
+    } else {
+      cv::Mat resized;
+      cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+      cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
+    }
     cv::imshow("mask", mask);
   }
   for (const auto &depth : depthmaps) {
@@ -946,10 +950,18 @@ void inferLightNetPipeline(
   // Draw visualizations if not suppressed
   //if (1) {
   if (!visualization_config.dont_show) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }          
     drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, target);
     if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
       drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
     }
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "#Visualization: " << duration.count() << " ms " << std::endl;
+    }          
   }
 
   // Save results if the save flag is enabled
@@ -1209,6 +1221,9 @@ main(int argc, char* argv[])
     } 
   } else if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
+      if (profile_verbose()) {
+	start = std::chrono::high_resolution_clock::now();
+      }      
       std::cout << "Inference from " << file.path() << std::endl;
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
       inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
@@ -1218,6 +1233,11 @@ main(int argc, char* argv[])
 	}
 	cv::imshow("inference", image);	
 	cv::waitKey(0);
+      }
+      if (profile_verbose()) {      
+	end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	std::cout << "#Duration: " << duration.count() << " ms " << " FPS: " << 1000/duration.count()  << std::endl;
       }      
     }
   } else if (!path_config.video_path.empty() || path_config.camera_id != -1) {
@@ -1233,7 +1253,7 @@ main(int argc, char* argv[])
 	start = std::chrono::high_resolution_clock::now();
       }
       video >> image;
-      if (image.empty()) break;
+      if (image.empty()) break;     
       std::ostringstream sout;
       sout << std::setfill('0') << std::setw(6) << count;	  
       std::string name = "frame_" + sout.str() + ".jpg";	              

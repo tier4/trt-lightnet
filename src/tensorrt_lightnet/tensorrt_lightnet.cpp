@@ -337,6 +337,7 @@ namespace tensorrt_lightnet
     d_bevmap_ = NULL;
     d_depth_colormap_ = NULL;
     d_colorMap_ = NULL;
+    d_resized_mask_  = NULL;
     int chan_size = (4 + 1 + num_class_) * num_anchor_;    
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -1221,7 +1222,8 @@ namespace tensorrt_lightnet
    * @param im_h Image height of the original input.
    * @param calibdata Calibration data required for back projection.
    */
-  void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata) {
+  void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata)
+  {
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
     bevmap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
 
@@ -1293,6 +1295,35 @@ namespace tensorrt_lightnet
     }
   }
 
+  void TrtLightnet::blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma)
+  {
+    int mask_size = image.cols * image.rows * 3;
+    if (!d_resized_mask_) {
+      d_resized_mask_  = cuda_utils::make_unique<unsigned char[]>(mask_size);
+    }    
+    for (const auto &mask : masks_) {
+      if (masks_.size() == 1) {
+	resizeNearestNeighborGpu(d_resized_mask_.get(), d_mask_.get(),
+				 image.cols, image.rows, 3,
+				 masks_[0].cols, masks_[0].rows, 3, *stream_);
+      } else {     
+	cv::Mat resized;
+	cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+	CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					 d_resized_mask_.get(),
+					 resized.data,
+					 sizeof(unsigned char) * mask_size,
+					 cudaMemcpyHostToDevice,
+					 *stream_
+					 ));
+      }      
+      addWeightedGpu(d_img_, d_img_, d_resized_mask_.get(), alpha, beta, gamma, image.cols, image.rows, 3, *stream_);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(h_img_, d_img_, sizeof(unsigned char) * mask_size, cudaMemcpyDeviceToHost, *stream_));
+      cudaStreamSynchronize(*stream_);
+      memcpy(image.data, h_img_, mask_size * sizeof(unsigned char));       
+    }
+  }
+  
   /**
    * Retrieves the generated BEV map.
    * 

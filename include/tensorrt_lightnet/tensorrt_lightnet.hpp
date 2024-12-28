@@ -488,6 +488,8 @@ public:
    */  
   void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata);
 
+  void blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma);
+  
   /**
    * Retrieves the generated BEV map.
    * 
@@ -970,6 +972,8 @@ public:
   CudaUniquePtr<int[]> d_road_ids_;
 
   CudaUniquePtr<ucharRGB[]> d_colorMap_;
+
+  CudaUniquePtr<unsigned char[]> d_resized_mask_;  
 };
 
 }  // namespace tensorrt_lightnet

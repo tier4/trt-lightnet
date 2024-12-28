@@ -115,6 +115,47 @@ void blobFromImageGpu(float *dst, unsigned char*src, int d_w, int d_h, int d_c,
 
 }
 
+__global__ void resizeNearestNeighborKernel(int N, unsigned char* dst_img, unsigned char* src_img, 
+				       int dst_h, int dst_w, int src_h, int src_w, 
+				    float stride_h, float stride_w)
+{
+  int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+
+  if (index >= N) return;
+  int chan = 3; 
+  int w = index % dst_w;
+  int h = index / dst_w;
+  float centroid_h, centroid_w;
+  int c;
+  centroid_h = stride_h * (float)(h + 0.5); 
+  centroid_w = stride_w * (float)(w + 0.5);
+  int src_h_idx = lroundf(centroid_h)-1;
+  int src_w_idx = lroundf(centroid_w)-1;
+  if (src_h_idx<0){src_h_idx=0;}
+  if (src_w_idx<0){src_w_idx=0;}  
+  index = chan * src_w_idx + chan* src_w * src_h_idx;
+  int dst_index = (chan * dst_w * h) + (chan * w);
+    
+  for (c = 0; c < chan; c++) {
+    //NHWC
+    dst_img[dst_index + c] = src_img[index + c];
+  }
+}
+
+void resizeNearestNeighborGpu(unsigned char *dst, unsigned char*src, int d_w, int d_h, int d_c,
+			 int s_w, int s_h, int s_c, cudaStream_t stream)
+{
+  int N =  d_w * d_h;
+  float stride_h = (float)s_h / (float)d_h;
+  float stride_w = (float)s_w / (float)d_w;
+  resizeNearestNeighborKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, dst, src,   
+							      d_h, d_w,
+							      s_h, s_w,
+							      stride_h, stride_w);
+
+}
+
+
 __global__ void smoothDepthmapKernel(float* depthBuf, const int* segBuf,
 				     int width, int height, int segWidth, int segHeight,
 				     float scaleW, float scaleH, int* road_ids, int numRoadIds) {
@@ -307,5 +348,32 @@ void mapArgmaxtoColorGpu(unsigned char *output, int *input,
 
   mapArgmaxToColorKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(output, input,
 								 width, height, colorMap);
+
+}
+
+__global__ void addWeightedKernel(int N, unsigned char* dst, const unsigned char* src1, const unsigned char* src2,
+				  float alpha, float beta, float gamma, int width, int height, int channels) {
+
+  int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+  if (index >= N) return;
+  int x = index % width;
+  int y = index / width;  
+
+  int idx = (y * width + x) * channels;
+  for (int c = 0; c < channels; ++c) {
+    float value = alpha * src1[idx + c] + beta * src2[idx + c] + gamma;
+    dst[idx + c] = min(max(static_cast<int>(value), 0), 255);
+  }
+}
+
+void addWeightedGpu(unsigned char *output, unsigned char *src1,  unsigned char *src2,
+		      float alpha, float beta, float gamma,
+		      int width, int height, int channel, cudaStream_t stream)
+{
+  int N =  width * height;
+
+  addWeightedKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, output, src1, src2,
+							    alpha, beta, gamma,
+							    width, height, channel);
 
 }
