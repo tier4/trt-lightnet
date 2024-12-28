@@ -726,6 +726,144 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * Computes the area of a single bounding box.
+   *
+   * @param bbox The bounding box for which the area is to be calculated.
+   * @return The area of the bounding box. Returns 0 if the dimensions are invalid.
+   */
+  float TrtLightnet::calculateBBoxArea(const BBox& bbox) {
+    float width = std::max(0.0f, bbox.x2 - bbox.x1);
+    float height = std::max(0.0f, bbox.y2 - bbox.y1);
+    return width * height;
+  }
+
+  /**
+   * Computes the overlapping area between two bounding boxes.
+   *
+   * @param bbox1 The first bounding box.
+   * @param bbox2 The second bounding box.
+   * @return The area of the overlapping region between the two bounding boxes. Returns 0 if there is no overlap.
+   */
+  float TrtLightnet::calculateOverlapArea(const BBox& bbox1, const BBox& bbox2) {
+    float overlapX1 = std::max(bbox1.x1, bbox2.x1);
+    float overlapY1 = std::max(bbox1.y1, bbox2.y1);
+    float overlapX2 = std::min(bbox1.x2, bbox2.x2);
+    float overlapY2 = std::min(bbox1.y2, bbox2.y2);
+
+    // Calculate overlap width and height
+    float overlapWidth = std::max(0.0f, overlapX2 - overlapX1);
+    float overlapHeight = std::max(0.0f, overlapY2 - overlapY1);
+
+    // Return the area of the overlapping region
+    return overlapWidth * overlapHeight;
+  }
+
+  /**
+   * Computes the aspect ratio of a bounding box.
+   *
+   * @param bbox The bounding box for which the aspect ratio is to be calculated.
+   * @return The aspect ratio (width / height). Returns 0 if the height is zero.
+   */  
+  float TrtLightnet::calculateAspectRatio(const BBox& bbox) {
+    float width = std::max(0.0f, bbox.x2 - bbox.x1);
+    float height = std::max(0.0f, bbox.y2 - bbox.y1);
+    return (height > 0.0f) ? (width / height) : 0.0f; // Avoid division by zero
+  }
+  
+  /**
+   * Checks if one bounding box is completely contained within another bounding box.
+   *
+   * @param bbox1 The bounding box to check for containment.
+   * @param bbox2 The bounding box that may contain bbox1.
+   * @return True if bbox1 is contained within bbox2, false otherwise.
+   */
+  bool TrtLightnet::isContained(const BBox& bbox1, const BBox& bbox2)
+  {
+    return (bbox1.x1 >= bbox2.x1 && bbox1.y1 >= bbox2.y1 &&
+	    bbox1.x2 <= bbox2.x2 && bbox1.y2 <= bbox2.y2);
+  }
+
+  /**
+   * Removes bounding boxes that are contained within others.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on containment.
+   */
+  void TrtLightnet::removeContainedBBoxes(std::vector<std::string> &names, std::vector<std::string> &target)
+  {
+    std::vector<BBoxInfo> result;
+
+    for (size_t i = 0; i < bbox_.size(); ++i) {
+      bool isContainedFlag = false;
+      bool flg = false;
+      for (auto &t : target) {
+	if (t == names[bbox_[i].classId]) {
+	  flg = true;
+	}
+      }
+      if (!flg) {
+	result.push_back(bbox_[i]);
+	continue;
+      }
+      for (size_t j = 0; j < bbox_.size(); ++j) {
+	bool flg = false;
+	for (auto &t : target) {
+	  if (t == names[bbox_[j].classId]) {
+	    flg = true;
+	  }
+	}
+	if (!flg) {	  
+	  continue;
+	}
+	if (i != j) {	
+	  float overlap =  calculateOverlapArea(bbox_[i].box, bbox_[j].box);
+	  float area = calculateBBoxArea(bbox_[i].box);
+	  if ((overlap / area) > 0.85) {
+	    isContainedFlag = true;
+	    break;
+	  }
+	}
+      }
+
+      if (!isContainedFlag) {
+	result.push_back(bbox_[i]);
+      }
+    }
+      bbox_ = result;
+  }
+
+  /**
+   * Removes bounding boxes whose aspect ratio exceeds a specified threshold.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on aspect ratio.
+   * @param targetAspectRatio The maximum allowable aspect ratio. Bounding boxes with aspect ratios exceeding this value are removed.
+   */
+  void TrtLightnet::removeAspectRatioBoxes(std::vector<std::string> &names, std::vector<std::string> &target, float targetAspectRatio) {
+    std::vector<BBoxInfo> result;
+
+    for (const auto& bboxInfo : bbox_) {
+      bool flg = false;
+      for (auto &t : target) {
+	if (t == names[bboxInfo.classId]) {
+	  flg = true;
+	}
+      }
+      if (!flg) {
+	result.push_back(bboxInfo);	
+	continue;
+      }      
+      float aspectRatio = calculateAspectRatio(bboxInfo.box);
+      if (aspectRatio > targetAspectRatio) {
+	result.push_back(bboxInfo);
+      }
+    }
+
+    bbox_ =  result;
+  }
+
+  
+  /**
    * @brief Smoothes the depth map using road segmentation information.
    *
    * This function processes depth map tensors to refine the depth values 

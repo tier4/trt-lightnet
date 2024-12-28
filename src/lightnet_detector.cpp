@@ -240,11 +240,11 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
  */
 void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<fswp::FaceSwapper> fswp_model, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
 {
+  trt_lightnet->removeAspectRatioBoxes(names, target, 1/4.0);  
+  trt_lightnet->removeContainedBBoxes(names, target);
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
-  trt_lightnet->clearSubnetBbox();
   int num = (int)bbox.size();
 
-  
   std::vector<tensorrt_lightnet::BBoxInfo> fdet_bboxes;
   for (int i = 0; i < num; i++) {
       auto b = bbox[i];

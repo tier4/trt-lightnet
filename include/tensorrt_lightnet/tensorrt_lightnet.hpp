@@ -755,6 +755,57 @@ public:
   void printProfiling(void);
 
   /**
+   * Checks if one bounding box is completely contained within another bounding box.
+   *
+   * @param bbox1 The bounding box to check for containment.
+   * @param bbox2 The bounding box that may contain bbox1.
+   * @return True if bbox1 is contained within bbox2, false otherwise.
+   */  
+  bool isContained(const BBox& bbox1, const BBox& bbox2);
+
+  /**
+   * Computes the area of a single bounding box.
+   *
+   * @param bbox The bounding box for which the area is to be calculated.
+   * @return The area of the bounding box. Returns 0 if the dimensions are invalid.
+   */  
+  float calculateBBoxArea(const BBox& bbox);
+
+  /**
+   * Computes the overlapping area between two bounding boxes.
+   *
+   * @param bbox1 The first bounding box.
+   * @param bbox2 The second bounding box.
+   * @return The area of the overlapping region between the two bounding boxes. Returns 0 if there is no overlap.
+   */  
+  float calculateOverlapArea(const BBox& bbox1, const BBox& bbox2);
+
+  /**
+   * Computes the aspect ratio of a bounding box.
+   *
+   * @param bbox The bounding box for which the aspect ratio is to be calculated.
+   * @return The aspect ratio (width / height). Returns 0 if the height is zero.
+   */    
+  float calculateAspectRatio(const BBox& bbox);  
+
+  /**
+   * Removes bounding boxes that are contained within others.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on containment.
+   */
+  void removeContainedBBoxes(std::vector<std::string> &names, std::vector<std::string> &target);
+
+  /**
+   * Removes bounding boxes whose aspect ratio exceeds a specified threshold.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on aspect ratio.
+   * @param targetAspectRatio The maximum allowable aspect ratio. Bounding boxes with aspect ratios exceeding this value are removed.
+   */
+  void removeAspectRatioBoxes(std::vector<std::string> &names, std::vector<std::string> &target, float targetAspectRatio);
+  
+  /**
    * Unique pointer to a TensorRT common utility class, encapsulating common TensorRT operations.
    */
   std::unique_ptr<tensorrt_common::TrtCommon> trt_common_;
