@@ -47,85 +47,80 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
   }
 
   ModelConfig model_config = {
-    .model_path = get_onnx_path(),
-    .num_class = get_classes(),
-    .score_threshold = static_cast<float>(get_score_thresh()),
-    .anchors = get_anchors(),
-    .num_anchors = get_num_anchors(),
-    .nms_threshold = static_cast<float>(get_nms_thresh()),
+      .model_path = get_onnx_path(),
+      .num_class = get_classes(),
+      .score_threshold = static_cast<float>(get_score_thresh()),
+      .anchors = get_anchors(),
+      .num_anchors = get_num_anchors(),
+      .nms_threshold = static_cast<float>(get_nms_thresh()),
   };
 
   InferenceConfig inference_config = {
-    .precision = get_precision(),    
-    .profile = get_prof_flg(),
-    .sparse = get_sparse_flg(),
-    .dla_core_id = get_dla_id(),
-    .use_first_layer = get_first_flg(),
-    .use_last_layer = get_last_flg(),
-    .batch_size = get_batch_size(),
-    .scale = 1.0, // Assuming a fixed value or obtained similarly.
-    .calibration_images = get_calibration_images(),
-    .calibration_type = get_calib_type(),    
-    .batch_config = {1, get_batch_size()/2, get_batch_size()},
-    .workspace_size = (1 << 30)
-  };
+      .precision = get_precision(),
+      .profile = get_prof_flg(),
+      .sparse = get_sparse_flg(),
+      .dla_core_id = get_dla_id(),
+      .use_first_layer = get_first_flg(),
+      .use_last_layer = get_last_flg(),
+      .batch_size = get_batch_size(),
+      .scale = 1.0,  // Assuming a fixed value or obtained similarly.
+      .calibration_images = get_calibration_images(),
+      .calibration_type = get_calib_type(),
+      .batch_config = {1, get_batch_size() / 2, get_batch_size()},
+      .workspace_size = (1 << 30)};
 
   path_config_ = {
-    .t4dataset_directory = get_t4_dataset_directory_path(),
-    .directory = get_directory_path(),
-    .video_path = get_video_path(),
-    .camera_id = get_camera_id(),
-    .dump_path = get_dump_path(),
-    .output_path = get_output_path(),
-    .flg_save = getSaveDetections(),
-    .save_path = getSaveDetectionsPath(),
-    .flg_save_debug_tensors = get_save_debug_tensors()
-  };
+      .t4dataset_directory = get_t4_dataset_directory_path(),
+      .directory = get_directory_path(),
+      .video_path = get_video_path(),
+      .camera_id = get_camera_id(),
+      .dump_path = get_dump_path(),
+      .output_path = get_output_path(),
+      .flg_save = getSaveDetections(),
+      .save_path = getSaveDetectionsPath(),
+      .flg_save_debug_tensors = get_save_debug_tensors()};
 
   std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();
   visualization_config_ = {
-    .dont_show = is_dont_show(),
-    .colormap = get_colormap(),
-    .names = get_names(),
-    .argmax2bgr = getArgmaxToBgr(get_seg_colormap()),
-    .seg_colormap = get_seg_colormap(),
-    .road_ids = get_road_ids()
-  };
+      .dont_show = is_dont_show(),
+      .colormap = get_colormap(),
+      .names = get_names(),
+      .argmax2bgr = getArgmaxToBgr(get_seg_colormap()),
+      .seg_colormap = get_seg_colormap(),
+      .road_ids = get_road_ids()};
 
   std::string save_path = path_config_.save_path;
   tensorrt_common::BuildConfig build_config(
-					    inference_config.calibration_type,
-					    inference_config.dla_core_id,
-					    inference_config.use_first_layer,
-					    inference_config.use_last_layer,
-					    inference_config.profile,
-					    0.0, // Assuming a fixed value for missing float parameter, might need adjustment.
-					    inference_config.sparse,
-					    get_debug_tensors()
-					    );
+      inference_config.calibration_type,
+      inference_config.dla_core_id,
+      inference_config.use_first_layer,
+      inference_config.use_last_layer,
+      inference_config.profile,
+      0.0,  // Assuming a fixed value for missing float parameter, might need adjustment.
+      inference_config.sparse,
+      get_debug_tensors());
 
   trt_lightnet_ =
       std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
-  
+
   // Subnet configuration
   std::vector<std::string> bluron = get_bluron_names();
   int numWorks = get_workers();  // omp_get_max_threads();
 
   if (get_subnet_onnx_path() != "not-specified") {
     ModelConfig subnet_model_config = {
-      .model_path = get_subnet_onnx_path(),
-      .num_class = get_subnet_classes(),
-      .score_threshold = static_cast<float>(get_subnet_score_thresh()),
-      .anchors = get_subnet_anchors(),
-      .num_anchors = get_subnet_num_anchors(),
-      .nms_threshold = 0.25f // Assuming this value is fixed or retrieved similarly.
+        .model_path = get_subnet_onnx_path(),
+        .num_class = get_subnet_classes(),
+        .score_threshold = static_cast<float>(get_subnet_score_thresh()),
+        .anchors = get_subnet_anchors(),
+        .num_anchors = get_subnet_num_anchors(),
+        .nms_threshold = 0.25f  // Assuming this value is fixed or retrieved similarly.
     };
     subnet_visualization_config_ = {
-      .dont_show = is_dont_show(),
-      .colormap = get_subnet_colormap(),
-      .names = get_subnet_names(),
-      .argmax2bgr = getArgmaxToBgr(seg_colormap)
-    };
+        .dont_show = is_dont_show(),
+        .colormap = get_subnet_colormap(),
+        .names = get_subnet_names(),
+        .argmax2bgr = getArgmaxToBgr(seg_colormap)};
     target_ = get_target_names();
     for (int w = 0; w < numWorks; w++) {
       if (build_config.dla_core_id >= 2) {
@@ -208,20 +203,24 @@ void TrtLightnetNode::onCompressedImage(
   std::vector<cv::Mat> depthmaps = trt_lightnet_->getDepthmap();
   std::vector<tensorrt_lightnet::KeypointInfo> keypoint = trt_lightnet_->getKeypoints();
   for (const auto& mask : masks) {
-    cv::Mat resized;
-    cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
+    if (get_cuda_flg()) {
+      trt_lightnet_->blendSegmentationGpu(image, 1.0, get_blending(), 0.0);
+    } else {
+      cv::Mat resized;
+      cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+      cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
+    }
   }
 
   trt_lightnet_->drawBbox(image, bbox, visualization_config_.colormap, visualization_config_.names);
-  if (target_.size() > 0 ) {
+  if (target_.size() > 0) {
     if (get_plot_circle_flg()) {
       Calibration calibdata = {
-        .u0 = (float)(image.cols/2.0),
-        .v0 = (float)(image.rows/2.0),
-        .fx = get_fx(),
-        .fy = get_fy(),
-        .max_distance = get_max_distance(),
+          .u0 = (float)(image.cols / 2.0),
+          .v0 = (float)(image.rows / 2.0),
+          .fx = get_fx(),
+          .fy = get_fy(),
+          .max_distance = get_max_distance(),
       };
       trt_lightnet_->plotCircleIntoBevmap(image.cols, image.rows, calibdata, visualization_config_.names, target_);
     }
@@ -236,38 +235,37 @@ void TrtLightnetNode::onCompressedImage(
   // cv::Mat mask = cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
   // cv::Mat depth = cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
   std::vector<cv::Mat> images = {image, masks[0], image, depthmaps[0]};
-  for(auto& m : images){
+  for (auto& m : images) {
     cv::resize(m, m, cv::Size(960, 576), 0, 0, cv::INTER_NEAREST);
   }
 
-  const double DISPLAY_TIME_MS = 5;  // 3秒表示
+  const double DISPLAY_TIME_MS = 5;     // 3秒表示
   const double TRANSITION_TIME_MS = 1;  // 1秒でフェード
-  
+
   auto current_time = this->now();
-  double elapsed =(current_time - last_transition_time_).seconds();
-  
+  double elapsed = (current_time - last_transition_time_).seconds();
+
   cv::Mat output;
-  if(elapsed < DISPLAY_TIME_MS) {
-      // 通常表示
-      output = images[current_index_];
+  if (elapsed < DISPLAY_TIME_MS) {
+    // 通常表示
+    output = images[current_index_];
   } else if (elapsed < DISPLAY_TIME_MS + TRANSITION_TIME_MS) {
-      // フェード中
-      double alpha = (elapsed - DISPLAY_TIME_MS) / TRANSITION_TIME_MS;
-      size_t next_index = (current_index_ + 1) % images.size();
-      cv::addWeighted(images[current_index_], 1.0 - alpha,
+    // フェード中
+    double alpha = (elapsed - DISPLAY_TIME_MS) / TRANSITION_TIME_MS;
+    size_t next_index = (current_index_ + 1) % images.size();
+    cv::addWeighted(images[current_index_], 1.0 - alpha,
                     images[next_index], alpha, 0.0, output);
-  }
-  else {
-      // 次の画像へ遷移
-      current_index_ = (current_index_ + 1) % images.size();
-      last_transition_time_ = current_time;
-      output = images[current_index_];
+  } else {
+    // 次の画像へ遷移
+    current_index_ = (current_index_ + 1) % images.size();
+    last_transition_time_ = current_time;
+    output = images[current_index_];
   }
   // RCLCPP_ERROR(get_logger(), "elapsed: %f", elapsed);
 
   // ウィンドウ名の設定
   std::string windowName = "demo";
-    
+
   // フレームレスウィンドウの作成
   cv::namedWindow(windowName, cv::WINDOW_GUI_NORMAL);
   cv::setWindowProperty(windowName, cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
@@ -275,37 +273,36 @@ void TrtLightnetNode::onCompressedImage(
   cv::imshow(windowName, output);
   cv::waitKey(1);
   if ((rows > 0) && (cols > 0)) {
-	    // cv::imshow("inference", image);	
-	    // cv::waitKey(1);
+    // cv::imshow("inference", image);
+    // cv::waitKey(1);
     // cv_ptr->image = cv::Mat::zeros(1,1, CV_8UC3);
     // auto image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
     // raw_image_pub_->publish(std::move(image_ptr));
 
-  //   // Publish mask image
-  //   {
-  //     // cv::Mat resized;
-  //     // cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-  //     cv_ptr->image = masks[0];
-  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-  //     mask_image_pub_->publish(std::move(image_ptr));
-  //   }
+    //   // Publish mask image
+    //   {
+    //     // cv::Mat resized;
+    //     // cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+    //     cv_ptr->image = masks[0];
+    //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+    //     mask_image_pub_->publish(std::move(image_ptr));
+    //   }
 
-  //   // Publish depth image
-  //   {
-  //     // cv::Mat resized;
-  //     // cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-  //     cv_ptr->image = depthmaps[0];
-  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-  //     depth_image_pub_->publish(std::move(image_ptr));
-  //   }
+    //   // Publish depth image
+    //   {
+    //     // cv::Mat resized;
+    //     // cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+    //     cv_ptr->image = depthmaps[0];
+    //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+    //     depth_image_pub_->publish(std::move(image_ptr));
+    //   }
 
-  //   // Publish bevmap
-  //   {
-  //     cv_ptr->image = trt_lightnet_->getBevMap();
-  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-  //     bev_image_pub_->publish(std::move(image_ptr));
-  //   }
-
+    //   // Publish bevmap
+    //   {
+    //     cv_ptr->image = trt_lightnet_->getBevMap();
+    //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+    //     bev_image_pub_->publish(std::move(image_ptr));
+    //   }
   }
 }
 
