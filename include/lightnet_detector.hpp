@@ -1092,6 +1092,9 @@ class TrtLightnetNode : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bev_image_pub_;
   std::string encoding_;
+
+  rclcpp::Time last_transition_time_{rclcpp::Time(0)};
+  size_t current_index_;
 };
 
 }  // namespace trt_lightnet

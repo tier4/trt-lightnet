@@ -1,6 +1,6 @@
 <launch>
   <!-- <arg name="input_topic_name" default="/input/compressed_image"/> -->
-  <arg name="input_topic_name" default="/sensing/camera/camera0/image_raw/compressed"/>
+  <arg name="input_topic_name" default="/sensing/camera/camera2/image_raw/compressed"/>
   <arg name="output_topic_name" default="/output/raw_image"/>
   <!-- <arg name="param_file" default="$(find-pkg-share trt_lightnet)/configs/trt_lightnet.param.yaml"/> -->
 

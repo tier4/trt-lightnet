@@ -164,6 +164,8 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
     target_ = get_target_names();
   }
 
+  last_transition_time_ = this->now();
+
   compressed_image_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
       "~/input/compressed_image", rclcpp::SensorDataQoS(),
       std::bind(&TrtLightnetNode::onCompressedImage, this, std::placeholders::_1));
@@ -182,6 +184,14 @@ void TrtLightnetNode::onCompressedImage(
   cv_bridge::CvImagePtr cv_ptr(new cv_bridge::CvImage);
 
   // Decode image
+  // try {
+  //   cv_ptr->header = input_compressed_image_msg->header;
+  //   cv_ptr->image = cv::Mat::zeros(1,1, CV_8UC3);
+  //   cv_ptr->encoding = sensor_msgs::image_encodings::BGR8;
+  // } catch (cv::Exception& e) {
+  //   RCLCPP_ERROR(get_logger(), "%s", e.what());
+  // }
+
   try {
     cv_ptr->header = input_compressed_image_msg->header;
     cv_ptr->image = cv::imdecode(cv::Mat(input_compressed_image_msg->data), cv::IMREAD_COLOR);
@@ -200,7 +210,7 @@ void TrtLightnetNode::onCompressedImage(
   for (const auto& mask : masks) {
     cv::Mat resized;
     cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, 0.45, 0.0, image);
+    cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
   }
 
   trt_lightnet_->drawBbox(image, bbox, visualization_config_.colormap, visualization_config_.names);
@@ -222,34 +232,79 @@ void TrtLightnetNode::onCompressedImage(
 
   size_t rows = cv_ptr->image.rows;
   size_t cols = cv_ptr->image.cols;
+
+  // cv::Mat mask = cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+  // cv::Mat depth = cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+  std::vector<cv::Mat> images = {image, masks[0], image, depthmaps[0]};
+  for(auto& m : images){
+    cv::resize(m, m, cv::Size(960, 576), 0, 0, cv::INTER_NEAREST);
+  }
+
+  const double DISPLAY_TIME_MS = 5;  // 3秒表示
+  const double TRANSITION_TIME_MS = 1;  // 1秒でフェード
+  
+  auto current_time = this->now();
+  double elapsed =(current_time - last_transition_time_).seconds();
+  
+  cv::Mat output;
+  if(elapsed < DISPLAY_TIME_MS) {
+      // 通常表示
+      output = images[current_index_];
+  } else if (elapsed < DISPLAY_TIME_MS + TRANSITION_TIME_MS) {
+      // フェード中
+      double alpha = (elapsed - DISPLAY_TIME_MS) / TRANSITION_TIME_MS;
+      size_t next_index = (current_index_ + 1) % images.size();
+      cv::addWeighted(images[current_index_], 1.0 - alpha,
+                    images[next_index], alpha, 0.0, output);
+  }
+  else {
+      // 次の画像へ遷移
+      current_index_ = (current_index_ + 1) % images.size();
+      last_transition_time_ = current_time;
+      output = images[current_index_];
+  }
+  // RCLCPP_ERROR(get_logger(), "elapsed: %f", elapsed);
+
+  // ウィンドウ名の設定
+  std::string windowName = "demo";
+    
+  // フレームレスウィンドウの作成
+  cv::namedWindow(windowName, cv::WINDOW_GUI_NORMAL);
+  cv::setWindowProperty(windowName, cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
+
+  cv::imshow(windowName, output);
+  cv::waitKey(1);
   if ((rows > 0) && (cols > 0)) {
-    auto image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-    raw_image_pub_->publish(std::move(image_ptr));
+	    // cv::imshow("inference", image);	
+	    // cv::waitKey(1);
+    // cv_ptr->image = cv::Mat::zeros(1,1, CV_8UC3);
+    // auto image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+    // raw_image_pub_->publish(std::move(image_ptr));
 
-    // Publish mask image
-    {
-      // cv::Mat resized;
-      // cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-      cv_ptr->image = masks[0];
-      image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-      mask_image_pub_->publish(std::move(image_ptr));
-    }
+  //   // Publish mask image
+  //   {
+  //     // cv::Mat resized;
+  //     // cv::resize(masks[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+  //     cv_ptr->image = masks[0];
+  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+  //     mask_image_pub_->publish(std::move(image_ptr));
+  //   }
 
-    // Publish depth image
-    {
-      // cv::Mat resized;
-      // cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-      cv_ptr->image = depthmaps[0];
-      image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-      depth_image_pub_->publish(std::move(image_ptr));
-    }
+  //   // Publish depth image
+  //   {
+  //     // cv::Mat resized;
+  //     // cv::resize(depthmaps[0], resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+  //     cv_ptr->image = depthmaps[0];
+  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+  //     depth_image_pub_->publish(std::move(image_ptr));
+  //   }
 
-    // Publish bevmap
-    {
-      cv_ptr->image = trt_lightnet_->getBevMap();
-      image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
-      bev_image_pub_->publish(std::move(image_ptr));
-    }
+  //   // Publish bevmap
+  //   {
+  //     cv_ptr->image = trt_lightnet_->getBevMap();
+  //     image_ptr = std::make_unique<sensor_msgs::msg::Image>(*cv_ptr->toImageMsg());
+  //     bev_image_pub_->publish(std::move(image_ptr));
+  //   }
 
   }
 }
