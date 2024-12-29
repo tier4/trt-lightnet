@@ -101,7 +101,7 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
       get_debug_tensors());
 
   trt_lightnet_ =
-      std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
+      std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config, get_depth_format());
 
   // Subnet configuration
   std::vector<std::string> bluron = get_bluron_names();
@@ -128,7 +128,7 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
         build_config.dla_core_id = (int)w / 2;
       }
       subnet_trt_lightnets_.push_back(
-          std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
+          std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config, get_depth_format()));
     }
   }
 
@@ -148,7 +148,7 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
         build_config.dla_core_id = (int)w / 2;
       }
       keypoint_trt_lightnets_.push_back(
-          std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config));
+          std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config, get_depth_format()));
     }
   }
 
