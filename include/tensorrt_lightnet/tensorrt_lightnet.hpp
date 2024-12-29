@@ -272,7 +272,7 @@ public:
    * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
    * TensorRT engine initialization fails.
    */  
-  TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config);
+  TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format);
 
   /**
    * Initializes the INT8 calibrator based on the specified calibration type.
@@ -488,6 +488,8 @@ public:
    */  
   void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata);
 
+  cv::Mat makeHeightmap(const int im_w, const int im_h, const Calibration calibdata);
+  
   void blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma);
   
   /**

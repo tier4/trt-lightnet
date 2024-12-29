@@ -261,7 +261,7 @@ namespace tensorrt_lightnet
    * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
    * TensorRT engine initialization fails.
    */  
-  TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config)
+  TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format)
   {
     const std::string& model_path = model_config.model_path;
     const std::string& precision = inference_config.precision;
@@ -354,7 +354,11 @@ namespace tensorrt_lightnet
 	  int src_size = outputH * outputW * 3;
 	  d_depthmap_ = cuda_utils::make_unique<unsigned char[]>(src_size);
 	  d_depth_colormap_ = cuda_utils::make_unique<unsigned char[]>(src_size);
-	  CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), magma_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));	 
+	  if (depth_format == "magma") {
+	    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), magma_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));
+	  } else {
+	    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), jet_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));
+	  }
 	}
       }
     }
@@ -1043,7 +1047,7 @@ namespace tensorrt_lightnet
 	  cv::Mat depthmap;
 
 	  // Initialize depth map with appropriate format (color or grayscale).
-	  if (depth_format == "magma") {
+	  if (depth_format == "magma" || depth_format == "jet") {
 	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC3);
 	  } else {
 	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC1);
@@ -1064,6 +1068,11 @@ namespace tensorrt_lightnet
 		depthmap.at<cv::Vec3b>(y, x)[0] = magma_colormap[255 - value][2];
 		depthmap.at<cv::Vec3b>(y, x)[1] = magma_colormap[255 - value][1];
 		depthmap.at<cv::Vec3b>(y, x)[2] = magma_colormap[255 - value][0];
+	      } else if (depth_format == "jet") {
+		// Apply the "magma" colormap.
+		depthmap.at<cv::Vec3b>(y, x)[0] = jet_colormap[255 - value][2];
+		depthmap.at<cv::Vec3b>(y, x)[1] = jet_colormap[255 - value][1];
+		depthmap.at<cv::Vec3b>(y, x)[2] = jet_colormap[255 - value][0];
 	      } else {
 		// Use grayscale format.
 		depthmap.at<unsigned char>(y, x) = value;
@@ -1295,6 +1304,56 @@ namespace tensorrt_lightnet
     }
   }
 
+
+  cv::Mat TrtLightnet::makeHeightmap(const int im_w, const int im_h, const Calibration calibdata)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    cv::Mat mask;
+
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+      const float max_height = 80.0;
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);      
+	  
+	  float scale_w = (float)(im_w) / (float)outputW;
+	  float *buf = (float *)output_h_.at(i-1).get();
+
+	  // Process the depth map within a specific vertical range (from 4/5 to 1/3 of the height).
+	  for (int y = outputH - 1; y >= 0; y--) {	  
+	    int stride = outputW * y;
+
+	    for (int x = 0; x < outputW; x++) {
+	      float distance = buf[stride + x] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+
+	      // Compute 3D coordinates from the 2D image coordinates.
+	      float src_x = x * scale_w;
+	      float y3d = ((src_x - calibdata.v0) / calibdata.fy) * distance;	      
+
+	      y3d = y3d < 0.0 ? 0.0 : y3d;
+	      y3d = y3d > max_height ? max_height : y3d;
+	      int value = y3d / (float)max_height * 255;	      
+	      mask.at<cv::Vec3b>(y, x)[0] = jet_colormap[value][0];
+	      mask.at<cv::Vec3b>(y, x)[1] = jet_colormap[value][1];
+	      mask.at<cv::Vec3b>(y, x)[2] = jet_colormap[value][2];	  
+	    }
+	  }
+	}
+      }
+    }
+    return mask;
+  }
+  
   void TrtLightnet::blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma)
   {
     int mask_size = image.cols * image.rows * 3;

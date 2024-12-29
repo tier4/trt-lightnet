@@ -113,10 +113,11 @@ void FaceSwapper::printProfiling(void) {
   }
 }
 
-cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox> &bboxes) {
+void FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox> &bboxes) {
   if (!trt_common_->isInitialized())
     throw std::runtime_error("Initialize trt_common_ first before perform inpainting.");
-  if (bboxes.size() == 0) return image;
+  if (bboxes.size() == 0) return;
+  //  if (bboxes.size() == 0) return image;  
   nvinfer1::Dims input_image_shape = trt_common_->getBindingDimensions(0);
   nvinfer1::Dims input_mask_shape = trt_common_->getBindingDimensions(1);
   const std::size_t input_image_h = input_image_shape.d[2];
@@ -143,7 +144,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
 
 
     // Create crop
-    const auto crop_size = 1.4f * std::max(w, h);
+    const auto crop_size = 1.4f * std::max(w, h);    
     const auto crop_xmin = xc - crop_size / 2.0f;
     const auto crop_ymin = yc - crop_size / 2.0f;
     const cv::Rect crop_roi = cv::Rect(crop_xmin, crop_ymin, crop_size, crop_size);
@@ -208,10 +209,10 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     CHECK_CUDA_ERROR(cudaMemcpyAsync(output_h_[0].get(), output_d_[0].get(),
                                      sizeof(float) * batch_output_size, cudaMemcpyDeviceToHost,
                                      *stream_));
+    unsigned char *nhwc = new unsigned char[batch_output_size];    
     cudaStreamSynchronize(*stream_);
 
     // NCHW -> NHWC
-    unsigned char *nhwc = new unsigned char[batch_output_size];    
     float *buf = output_h_[0].get();    
     const std::size_t size_chw = input_image_c * input_image_h * input_image_w;
     const std::size_t size_hw = input_image_h * input_image_w;
@@ -241,7 +242,8 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
   assert(outs.size() == num_bboxes);
 
   // Swap
-  cv::Mat inpainted(image);
+  //cv::Mat inpainted(image);
+  cv::Mat inpainted = image;  
   for (std::size_t i = 0; i < outs.size(); i++) {
     const auto &crop_roi = crop_rois[i];
     const auto &bbox_roi = bbox_rois[i];
@@ -251,7 +253,7 @@ cv::Mat FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox>
     out(bbox_roi - crop_roi.tl()).copyTo(inpainted(bbox_roi - image_roi.tl()));
   }
   
-  return inpainted;
+  //return inpainted;
 }
 
 }  // namespace fswp

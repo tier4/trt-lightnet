@@ -39,7 +39,7 @@ class FaceSwapper {
               std::string precision = "fp32", const std::size_t max_workspace_size = 1 << 30);
   ~FaceSwapper();
   void allocateMemory();
-  cv::Mat inpaint(const cv::Mat &image, const std::vector<BBox> &bboxes);
+  void inpaint(const cv::Mat &image, const std::vector<BBox> &bboxes);
   void printProfiling(void);
   std::unique_ptr<tensorrt_common::TrtCommon> trt_common_;
   std::vector<cuda_utils::CudaUniquePtr<float[]>> input_d_;

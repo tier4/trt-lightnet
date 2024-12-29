@@ -157,7 +157,7 @@ void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
 		   const auto &box = boxinfo.box;
 		   return fswp::BBox{box.x1, box.y1, box.x2, box.y2};
 		 });
-  image = fswp_model->inpaint(image, fswp_bboxes);  
+  fswp_model->inpaint(image, fswp_bboxes);  
 }
 
 /**
@@ -183,20 +183,22 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
   trt_lightnet->doInference();
 
   //postprocess
-  if (get_smooth_depthmap_using_semseg()) {
-    if (get_cuda_flg()) {
-      trt_lightnet->smoothDepthmapFromRoadSegmentationGpu(visualization_config.road_ids);
-    } else {
-      trt_lightnet->smoothDepthmapFromRoadSegmentation(visualization_config.road_ids);
-    }
-  }
-
   trt_lightnet->makeBbox(image.rows, image.cols);
 
+
+  
 #pragma omp parallel sections
   {
 #pragma omp section
     {
+      if (get_smooth_depthmap_using_semseg()) {
+	if (get_cuda_flg()) {
+	  trt_lightnet->smoothDepthmapFromRoadSegmentationGpu(visualization_config.road_ids);
+	} else {
+	  trt_lightnet->smoothDepthmapFromRoadSegmentation(visualization_config.road_ids);
+	}
+      }
+      
       trt_lightnet->makeMask(visualization_config.argmax2bgr);
       if (get_cuda_flg()) {
 	trt_lightnet->makeDepthmapGpu();
@@ -1119,7 +1121,7 @@ main(int argc, char* argv[])
 					    );
 
   auto trt_lightnet =
-    std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
+    std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config, get_depth_format());
   //Subnet configuration
   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets;
   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;
@@ -1152,7 +1154,7 @@ main(int argc, char* argv[])
 	build_config.dla_core_id = (int)w/2;
       }
       subnet_trt_lightnets.push_back(
-				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
+				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config, get_depth_format()));
     }
   }
 
@@ -1172,7 +1174,7 @@ main(int argc, char* argv[])
 	build_config.dla_core_id = (int)w/2;
       }
       keypoint_trt_lightnets.push_back(
-				     std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config));
+				       std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config, get_depth_format()));
     }
   }  
 
