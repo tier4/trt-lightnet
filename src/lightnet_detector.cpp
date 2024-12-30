@@ -22,7 +22,8 @@
 
 namespace trt_lightnet {
 TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
-    : rclcpp::Node("trt_lightnet", node_options) {
+    : rclcpp::Node("trt_lightnet", node_options),
+      current_index_(0) {
   const auto flagfile = declare_parameter("flagfile", "");
   const auto config_path = declare_parameter("config_path", "");
 
@@ -189,7 +190,7 @@ void TrtLightnetNode::onCompressedImage(
 
   try {
     cv_ptr->header = input_compressed_image_msg->header;
-    cv_ptr->image = cv::imdecode(cv::Mat(input_compressed_image_msg->data), cv::IMREAD_COLOR);
+    cv_ptr->image = decoder_.decode(input_compressed_image_msg->data);
     cv_ptr->encoding = sensor_msgs::image_encodings::BGR8;
   } catch (cv::Exception& e) {
     RCLCPP_ERROR(get_logger(), "%s", e.what());

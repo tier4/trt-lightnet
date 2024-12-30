@@ -35,6 +35,8 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
+#include "gpu_jpeg_decoder.hpp"
+
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -1095,6 +1097,7 @@ class TrtLightnetNode : public rclcpp::Node {
 
   rclcpp::Time last_transition_time_{rclcpp::Time(0)};
   size_t current_index_;
+  GPUJpegDecoder decoder_;
 };
 
 }  // namespace trt_lightnet

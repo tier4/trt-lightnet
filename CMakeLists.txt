@@ -24,6 +24,7 @@ link_directories(/usr/local/cuda/lib64)
 # Find external libraries
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_library(NVJPEG_LIBRARY nvjpeg ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
 
 # Define compile-time constants
 add_compile_options(-D LIGHTNET_STANDALONE)
@@ -41,7 +42,8 @@ file(GLOB_RECURSE sources
   src/sensor/SensorParser.cpp
   src/pcdUtils/pcd2image.cpp
   src/fswp/fswp.cpp
-  src/preprocess.cu  
+  src/preprocess.cu
+  src/gpu_jpeg_decoder.cpp
   )
 
 # # Create a shared library
@@ -76,7 +78,7 @@ ament_auto_add_library(trt_lightnet SHARED
 )
 
 target_include_directories(trt_lightnet PRIVATE
-  ${EIGEN3_INCLUDE_DIR}  
+  ${EIGEN3_INCLUDE_DIR}
   include
   include/pcdUtils
   include/sensor
@@ -92,8 +94,9 @@ target_link_libraries(trt_lightnet
   z
   dl
   "stdc++fs"
+  ${NVJPEG_LIBRARY}
   )
-  
+
 rclcpp_components_register_node(trt_lightnet
   PLUGIN "trt_lightnet::TrtLightnetNode"
   EXECUTABLE lightnet_node
