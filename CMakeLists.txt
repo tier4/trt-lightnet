@@ -5,7 +5,7 @@ project(trt_lightnet VERSION 1.0 LANGUAGES CXX CUDA)
 find_package(OpenMP REQUIRED)
 
 # Compiler settings
-set(CMAKE_CXX_COMPILER "/usr/bin/g++")
+# set(CMAKE_CXX_COMPILER "/usr/bin/g++")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
@@ -44,20 +44,24 @@ file(GLOB_RECURSE sources
   src/preprocess.cu  
   )
 
-# Create a shared library
-add_library(detector SHARED ${sources})
-target_link_libraries(detector
-  nvinfer nvinfer_plugin nvparsers nvonnxparser
-  cuda cudart
-  )
-target_include_directories(detector PRIVATE
-  extra/
-  ${OpenCV_INCLUDE_DIRS}
-  ${CUDA_TOOLKIT_ROOT_DIR}/include
-  ${EIGEN3_INCLUDE_DIR}
-  include/pcdUtils
-  include/sensor
-  )
+# # Create a shared library
+# add_library(detector SHARED ${sources})
+# target_link_libraries(detector
+#   nvinfer nvinfer_plugin nvparsers nvonnxparser
+#   cuda cudart
+#   )
+# target_include_directories(detector PRIVATE
+#   extra/
+#   ${OpenCV_INCLUDE_DIRS}
+#   ${CUDA_TOOLKIT_ROOT_DIR}/include
+#   ${EIGEN3_INCLUDE_DIR}
+#   include/pcdUtils
+#   include/sensor
+#   # ${PROJECT_SOURCE_DIR}/packages/cnpy/
+#   )
+
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/packages/cnpy)
+install(TARGETS cnpy PUBLIC_HEADER)
 
 # Create an executable
 # add_executable(trt_lightnet
@@ -76,6 +80,7 @@ target_include_directories(trt_lightnet PRIVATE
   include
   include/pcdUtils
   include/sensor
+  ${CMAKE_CURRENT_SOURCE_DIR}/packages/cnpy/
   )
 target_link_libraries(trt_lightnet
   ${OpenCV_LIBS}
