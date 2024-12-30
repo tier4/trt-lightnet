@@ -173,6 +173,13 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
       create_publisher<sensor_msgs::msg::Image>("~/output/depth_image", rclcpp::SensorDataQoS());
   bev_image_pub_ =
       create_publisher<sensor_msgs::msg::Image>("~/output/bev_image", rclcpp::SensorDataQoS());
+
+  // ウィンドウ名の設定
+  window_name_ = "demo";
+
+  // フレームレスウィンドウの作成
+  cv::namedWindow(window_name_, cv::WINDOW_GUI_NORMAL);
+  cv::setWindowProperty(window_name_, cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
 }
 
 void TrtLightnetNode::onCompressedImage(
@@ -264,14 +271,7 @@ void TrtLightnetNode::onCompressedImage(
   }
   // RCLCPP_ERROR(get_logger(), "elapsed: %f", elapsed);
 
-  // ウィンドウ名の設定
-  std::string windowName = "demo";
-
-  // フレームレスウィンドウの作成
-  cv::namedWindow(windowName, cv::WINDOW_GUI_NORMAL);
-  cv::setWindowProperty(windowName, cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
-
-  cv::imshow(windowName, output);
+  cv::imshow(window_name_, output);
   cv::waitKey(1);
   if ((rows > 0) && (cols > 0)) {
     // cv::imshow("inference", image);

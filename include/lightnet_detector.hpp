@@ -1097,6 +1097,8 @@ class TrtLightnetNode : public rclcpp::Node {
 
   rclcpp::Time last_transition_time_{rclcpp::Time(0)};
   size_t current_index_;
+  std::string window_name_;
+
   GPUJpegDecoder decoder_;
 };
 
