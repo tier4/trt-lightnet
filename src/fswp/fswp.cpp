@@ -225,7 +225,9 @@ void FaceSwapper::inpaint(const cv::Mat &image, const std::vector<fswp::BBox> &b
 	      b_idx * size_chw + c_idx * size_hw + h_idx * input_image_w + w_idx;
             const std::size_t nhwc_idx =
 	      b_idx * size_chw + h_idx * size_wc + w_idx * input_image_c + (input_image_c-1-c_idx);
-            nhwc[nhwc_idx] =  (unsigned char)(buf[nchw_idx] * 127.5 + 127.5); //RGB2BGR + Denormalization
+            float tmp = (buf[nchw_idx] * 127.5 + 127.5); //RGB2BGR + Denormalization
+	    tmp = (tmp < 0.0) ? 0 : tmp;
+	    nhwc[nhwc_idx] =  (tmp > 255.0) ? (unsigned char)255 : (unsigned char)tmp;	    
           }
         }
       }
