@@ -4,7 +4,7 @@
   <arg name="output_topic_name" default="/output/raw_image"/>
   <!-- <arg name="param_file" default="$(find-pkg-share trt_lightnet)/configs/trt_lightnet.param.yaml"/> -->
 
-  <node pkg="trt_lightnet" exec="lightnet_node" name="lightnet_node"  output="screen">
+  <node pkg="trt_lightnet" exec="lightnet_node" name="lightnet_node"  output="screen" launch-prefix="taskset -c 4,5,6">
     <param name="config_path" value="$(find-pkg-share trt_lightnet)/configs/"/>
     <param name="flagfile" value="$(find-pkg-share trt_lightnet)/configs/CES25/CES_DEMOv1.txt"/>
     <remap from="~/input/compressed_image" to="$(var input_topic_name)"/>
