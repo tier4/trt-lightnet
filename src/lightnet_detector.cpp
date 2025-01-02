@@ -179,6 +179,7 @@ TrtLightnetNode::TrtLightnetNode(const rclcpp::NodeOptions& node_options)
 
   // フレームレスウィンドウの作成
   cv::namedWindow(window_name_, cv::WINDOW_GUI_NORMAL);
+  cv::moveWindow(window_name_, 3840+1920, 0);
   cv::setWindowProperty(window_name_, cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
 }
 
