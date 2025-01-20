@@ -190,6 +190,9 @@ DEFINE_double(blending, 0.5, "[OPTIONAL] blending parameter for segmentation mas
 DEFINE_bool(verbose, false,
             "[OPTIONAL] Flag to profile verbose");
 
+DEFINE_bool(sparse_depth, false,
+            "[OPTIONAL] Flag to profile verbose");
+
 std::string
 get_onnx_path(void)
 {
@@ -816,4 +819,10 @@ bool
 profile_verbose(void)
 {
   return FLAGS_verbose;
+}
+
+bool
+get_sparse_depth_flg(void)
+{
+  return FLAGS_sparse_depth;
 }

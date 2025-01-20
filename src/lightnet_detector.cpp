@@ -69,6 +69,43 @@ std::string format(const std::string& fmt, Args ... args )
   return std::string(&buf[0], &buf[0] + len);
 }
 
+cv::Mat concatHorizontal(const cv::Mat& mat1, const cv::Mat& mat2) {
+  if (mat1.empty() || mat2.empty()) {
+    std::cerr << "Input matrices should not be empty!" << std::endl;
+    return cv::Mat();
+  }
+
+  cv::Mat resizedMat2;
+  double aspectRatio = static_cast<double>(mat2.cols) / mat2.rows;
+  int newWidth = static_cast<int>(aspectRatio * mat1.rows); 
+  cv::resize(mat2, resizedMat2, cv::Size(newWidth, mat1.rows));
+
+  cv::Mat concatenated;
+  cv::hconcat(mat1, resizedMat2, concatenated);
+
+  return concatenated;
+}
+
+cv::Mat concatHorizontalWithPadding(const cv::Mat& mat1, const cv::Mat& mat2) {
+  if (mat1.empty() || mat2.empty()) {
+    std::cerr << "Input matrices should not be empty!" << std::endl;
+    return cv::Mat();
+  }
+
+  int maxHeight = std::max(mat1.rows, mat2.rows);
+
+  cv::Mat paddedMat1 = cv::Mat::zeros(maxHeight, mat1.cols, mat1.type());
+  mat1.copyTo(paddedMat1(cv::Rect(0, (maxHeight - mat1.rows) / 2, mat1.cols, mat1.rows)));
+
+  cv::Mat paddedMat2 = cv::Mat::zeros(maxHeight, mat2.cols, mat2.type());
+  mat2.copyTo(paddedMat2(cv::Rect(0, (maxHeight - mat2.rows) / 2, mat2.cols, mat2.rows)));
+
+  cv::Mat concatenated;
+  cv::hconcat(paddedMat1, paddedMat2, concatenated);
+
+  return concatenated;
+}
+
 /**
  * Replaces the first occurrence of a substring within a string with another substring.
  * If the substring to replace is not found, the original string is returned unchanged.
@@ -185,8 +222,6 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
   //postprocess
   trt_lightnet->makeBbox(image.rows, image.cols);
 
-
-  
 #pragma omp parallel sections
   {
 #pragma omp section
@@ -197,6 +232,7 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 	} else {
 	  trt_lightnet->smoothDepthmapFromRoadSegmentation(visualization_config.road_ids);
 	}
+	
       }
       
       trt_lightnet->makeMask(visualization_config.argmax2bgr);
@@ -216,7 +252,10 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 	.max_distance = get_max_distance(),
       };
       if (get_cuda_flg()) {
-	trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata);
+	if (get_sparse_depth_flg()) {
+	  trt_lightnet->makeBackProjectionGpuWithoutDensify(image.cols, image.rows, calibdata);
+	}
+	trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata, 2);
       } else {
 	trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);
       }
@@ -228,7 +267,7 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 	if (profile_verbose()) {
 	  start = std::chrono::high_resolution_clock::now();
 	}
-      
+	
 	inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
 	if (profile_verbose()) {      
 	  end = std::chrono::high_resolution_clock::now();
@@ -238,6 +277,7 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
       }
     }
   }
+  
 }
 
 /**
@@ -414,6 +454,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
     }
     cv::imshow("mask", mask);
   }
+
   for (const auto &depth : depthmaps) {
     cv::imshow("depth", depth);
   }
@@ -454,6 +495,12 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
     cv::imshow("bevmap", bevmap);
+    if (get_cuda_flg()) {
+      if (get_sparse_depth_flg()) {
+	cv::Mat sparsemap = trt_lightnet->getSparseBevMap();
+	cv::imshow("sparse-bevmap", sparsemap);
+      }
+    }
   }
 }
 
@@ -757,6 +804,18 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
     fs::create_directory(p);
     cv::Mat bevmap = trt_lightnet->getBevMap();
     saveImage(bevmap, p.string(), png_name);
+    p = fs::path(save_path) / "occupancyGrid";
+    fs::create_directory(p);
+    cv::Mat occupancy = trt_lightnet->getOccupancyGrid();
+    saveImage(occupancy, p.string(), png_name);
+    if (get_cuda_flg()) {
+      if (get_sparse_depth_flg()) {
+	cv::Mat sparsemap = trt_lightnet->getSparseBevMap();
+	p = fs::path(save_path) / "sparse_bevmap";
+	fs::create_directory(p);
+	saveImage(sparsemap, p.string(), png_name);	
+      }
+    }
   }  
 }
 
@@ -962,8 +1021,8 @@ void inferLightNetPipeline(
   }
  
   // Draw visualizations if not suppressed
-  //if (1) {
-  if (!visualization_config.dont_show) {
+  if (1) {
+    //if (!visualization_config.dont_show) {
     if (profile_verbose()) {
       start = std::chrono::high_resolution_clock::now();
     }          

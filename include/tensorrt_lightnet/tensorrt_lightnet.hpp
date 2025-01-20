@@ -69,11 +69,18 @@ struct Calibration {
   float max_distance;
 };
 
-#define GRID_H 640
-#define GRID_W 480
+//#define GRID_H 640
+//#define GRID_W 480
+
+//#define GRID_H 640
+//#define GRID_W 640
+
+#define GRID_H 1280
+#define GRID_W 960
+
 
 extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
-				  int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, cudaStream_t stream);
+				 int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, int padding, cudaStream_t stream);
 
 extern void mapArgmaxtoColorGpu(unsigned char *output, int *input, 
 				int width, int height, const ucharRGB *colorMap, cudaStream_t stream);
@@ -486,10 +493,45 @@ public:
    * @param im_h Image height of the original input.
    * @param calibdata Calibration data required for back projection.
    */  
-  void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata);
+  void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding);
 
+  /**
+   * @brief Performs a GPU-based back projection without densifying the BEV map.
+   *
+   * This function processes a depth map tensor to create a sparse BEV (Bird's Eye View) map
+   * using GPU-based back projection. The output map is visualized as `sparsemap_`.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata Calibration data containing camera parameters and configurations.
+   */  
+  void makeBackProjectionGpuWithoutDensify(const int im_w, const int im_h, const Calibration calibdata);
+
+  /**
+   * @brief Creates a height map from the depth map data using 3D geometry transformations.
+   *
+   * This function generates a height map by converting depth data from a tensor to a color-coded
+   * visualization, where the height values are represented in a jet colormap.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata The calibration data containing intrinsic camera parameters and max distance.
+   * @return cv::Mat The generated height map as a color-coded image.
+   */
   cv::Mat makeHeightmap(const int im_w, const int im_h, const Calibration calibdata);
-  
+
+  /**
+   * @brief Blends segmentation masks with an input image using GPU acceleration.
+   *
+   * This function applies segmentation masks to an input image using GPU-based 
+   * processing. It supports resizing masks and blending them with the image using 
+   * specified weights for alpha, beta, and gamma.
+   *
+   * @param image Input/output image to which the segmentation masks are applied.
+   * @param alpha Weight of the original image in the blending process.
+   * @param beta Weight of the segmentation mask in the blending process.
+   * @param gamma Scalar added to each sum during blending.
+   */  
   void blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma);
   
   /**
@@ -499,6 +541,55 @@ public:
    */      
   cv::Mat getBevMap(void);
 
+  /**
+   * Retrieves the generated sparse BEV map.
+   * 
+   * @return sparse bev map.
+   */        
+  cv::Mat getSparseBevMap(void);
+
+  /**
+   * @brief Processes a BEV (Bird's Eye View) map to identify and visualize free space.
+   *
+   * This function processes a BEV map (`bevmap_`) to create a free space map (`freespace_`) by:
+   * - Converting specific pixel values in the BEV map to a binary image.
+   * - Smoothing the binary image and detecting contours.
+   * - Identifying the largest contour and visualizing it along with other contours.
+   * - Displaying the resulting free space and binary image.
+   *
+   * @param road_ids A vector of road IDs (currently not used within the function).
+   */  
+  void makeFreespace(std::vector<int> road_ids);
+  
+  /**
+   * @brief Generates and returns the occupancy grid for the BEV (Bird's Eye View) map.
+   * 
+   * The occupancy grid is used to represent road, obstacles, and other entities
+   * in a bird's eye view format. This function initializes and updates the 
+   * occupancy grid based on the provided BEV map and bounding box information.
+   *
+   * @return cv::Mat The occupancy grid as a CV Mat object.
+   */  
+  cv::Mat getOccupancyGrid(void);
+
+  /**
+   * @brief Creates the occupancy grid based on road and obstacle data.
+   *
+   * This function processes the BEV map (`bevmap_`) and bounding box data (`bbox_`) to:
+   * - Identify and mark road areas in the occupancy grid.
+   * - Map bounding boxes to 3D coordinates and project them onto the BEV map.
+   * - Render obstacles and roads in distinct colors based on a provided colormap.
+   * 
+   * @param road_ids A vector of road IDs (currently unused in the function).
+   * @param im_w Image width of the input data.
+   * @param im_h Image height of the input data.
+   * @param calibdata Camera calibration data used for coordinate transformations.
+   * @param colormap A 2D vector specifying the color for each class of objects.
+   * @param names A list of class names corresponding to the object classes.
+   * @param target A list of target class names to process.
+   */  
+  void makeOccupancyGrid(std::vector<int> road_ids, const int im_w, const int im_h, const Calibration calibdata, std::vector<std::vector<int>> &colormap, std::vector<std::string> names, std::vector<std::string> &target);  
+  
   /**
    * @brief Smoothes the depth map using road segmentation information.
    *
@@ -905,7 +996,8 @@ public:
   /**
    * Stores bev maps generated from the depth and segseg with calibration info .
    */  
-  cv::Mat bevmap_;  
+  cv::Mat bevmap_;
+  cv::Mat sparsemap_;    
 
   /**
    * Stores bounding boxes detected by the subnet, allowing for specialized processing on selected detections.
@@ -973,9 +1065,38 @@ public:
    */
   CudaUniquePtr<int[]> d_road_ids_;
 
+  /**
+   * @brief CUDA-managed unique pointer for the color map in RGB format.
+   *
+   * This color map is used to visualize various BEV (Bird's Eye View) and height maps
+   * with appropriate color coding for different features.
+   */
   CudaUniquePtr<ucharRGB[]> d_colorMap_;
 
-  CudaUniquePtr<unsigned char[]> d_resized_mask_;  
+  /**
+   * @brief CUDA-managed unique pointer for the resized mask.
+   *
+   * This memory holds resized segmentation masks for GPU processing during
+   * operations like blending, back projection, and height map generation.
+   */  
+  CudaUniquePtr<unsigned char[]> d_resized_mask_;
+
+  /**
+   * @brief Free space map in BEV representation.
+   *
+   * This OpenCV matrix is used to visualize areas identified as free space
+   * in the BEV map. It is updated during segmentation and back projection processes.
+   */  
+  cv::Mat freespace_;
+
+  /**
+   * @brief Occupancy grid map in BEV representation.
+   *
+   * This OpenCV matrix represents the road, obstacles, and other features
+   * in the BEV. It is used to analyze and visualize the spatial layout
+   * of the environment.
+   */  
+  cv::Mat occupancy_;    
 };
 
 }  // namespace tensorrt_lightnet

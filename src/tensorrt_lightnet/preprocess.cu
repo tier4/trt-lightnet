@@ -250,7 +250,7 @@ __global__ void backProjectionKernel(
 				     const float* depthMap, const int outputW, const int outputH, const float scale_w, const float scale_h,
 				     const float gran_h, const float max_distance, const float u0, const float v0, const float fx, const float fy,
 				     const int mask_w, const int mask_h, const float mask_scale_w, const float mask_scale_h,
-				     const unsigned char* mask, const int maskStep, unsigned char* bevMap, const int bevStep, const int gridW, const int gridH) {
+				     const unsigned char* mask, const int maskStep, unsigned char* bevMap, const int bevStep, const int gridW, const int gridH, int padding) {
 
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -276,10 +276,15 @@ __global__ void backProjectionKernel(
     int mask_y = static_cast<int>(y * mask_scale_h);
     int xx, yy;
     if (mask) {
+      if (mask[mask_y * maskStep + 3 * mask_x + 0] == 0 &&
+	  mask[mask_y * maskStep + 3 * mask_x + 1] == 0 &&
+	  mask[mask_y * maskStep + 3 * mask_x + 2] == 0) {
+	return;
+      }
       bevMap[y_bev * bevStep + 3 * x_bev + 0] = mask[mask_y * maskStep + 3 * mask_x + 0];
       bevMap[y_bev * bevStep + 3 * x_bev + 1] = mask[mask_y * maskStep + 3 * mask_x + 1];
       bevMap[y_bev * bevStep + 3 * x_bev + 2] = mask[mask_y * maskStep + 3 * mask_x + 2];
-      for (yy = -2; yy <= 2; yy++) {
+      for (yy = -padding; yy <= padding; yy++) {
 	for (xx = 0; xx <= 0; xx++) {	
 	  if ((y_bev+yy) >= 0 && (y_bev+yy) < gridH) {
 	    if ((x_bev+xx) >= 0 && (x_bev+xx) < gridW) {
@@ -300,7 +305,7 @@ __global__ void backProjectionKernel(
 }
 
 void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
-		     int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, cudaStream_t stream)
+			  int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, int padding, cudaStream_t stream)
 {
   //int N =  width * height;
 
@@ -313,7 +318,7 @@ void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float 
 					      d_depth, outputW, outputH, scale_w, scale_h, gran_h, calibdata.max_distance,
 					      calibdata.u0, calibdata.v0, calibdata.fx, calibdata.fy, mask_w, mask_h,
 					      mask_scale_w, mask_scale_h,
-					      d_mask, mask_step, d_bevMap, bevmap_step, GRID_W, GRID_H);
+					      d_mask, mask_step, d_bevMap, bevmap_step, GRID_W, GRID_H, padding);
 
 }
 

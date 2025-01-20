@@ -867,6 +867,255 @@ namespace tensorrt_lightnet
     bbox_ =  result;
   }
 
+  /**
+   * @brief Processes a BEV (Bird's Eye View) map to identify and visualize free space.
+   *
+   * This function processes a BEV map (`bevmap_`) to create a free space map (`freespace_`) by:
+   * - Converting specific pixel values in the BEV map to a binary image.
+   * - Smoothing the binary image and detecting contours.
+   * - Identifying the largest contour and visualizing it along with other contours.
+   * - Displaying the resulting free space and binary image.
+   *
+   * @param road_ids A vector of road IDs (currently not used within the function).
+   */
+  void TrtLightnet::makeFreespace(std::vector<int> road_ids) {
+    // Initialize the free space map and a grayscale version of it.
+    freespace_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Free space map (RGB).
+    cv::Mat grayscale = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC1);  // Grayscale map for processing.
+
+    // Iterate through the BEV map to identify specific pixels representing the road surface.
+    for (int x = 0; x < GRID_W; x++) {
+      for (int y = GRID_H - 1; y >= 0; y--) {
+	cv::Vec3b b = bevmap_.at<cv::Vec3b>(y, x);
+	if (b[0] == 128 && b[1] == 64 && b[2] == 128) {  // Road pixel identified.
+	  grayscale.at<uchar>(y, x) = 255;  // Mark road pixels in grayscale.
+	}
+      }
+    }
+
+    // Smooth the grayscale image using a Gaussian blur.
+    cv::Mat smoothedImage;
+    cv::GaussianBlur(grayscale, smoothedImage, cv::Size(7, 7), 0);
+
+    // Convert the smoothed image to a binary image using a threshold.
+    cv::Mat binaryImage;
+    cv::threshold(smoothedImage, binaryImage, 0, 255, cv::THRESH_BINARY);
+
+    // Display the binary image for debugging purposes.
+    cv::imshow("binaryImage", binaryImage);
+
+    // Find contours in the binary image.
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(binaryImage, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+
+    // Identify the largest contour by area.
+    int largestContourIndex = -1;
+    double largestArea = 0.0;
+    for (size_t i = 0; i < contours.size(); i++) {
+      double area = cv::contourArea(contours[i]);
+      if (area > largestArea) {
+	largestArea = area;
+	largestContourIndex = static_cast<int>(i);
+      }
+    }
+
+    // Draw all outer contours in green (indicating free space).
+    for (size_t i = 0; i < contours.size(); i++) {
+      if (hierarchy[i][3] == -1) {  // Only draw outermost contours.
+	cv::drawContours(freespace_, contours, static_cast<int>(i), cv::Scalar(0, 255, 0), cv::FILLED);
+      }
+    }
+
+    // Highlight the largest contour in green if found.
+    if (largestContourIndex != -1) {
+      cv::drawContours(freespace_, contours, largestContourIndex, cv::Scalar(0, 255, 0), cv::FILLED);
+    }
+
+    // Draw other contours (not the largest) in red.
+    for (size_t i = 0; i < contours.size(); i++) {
+      if (i != (size_t)largestContourIndex) {
+	cv::drawContours(freespace_, contours, static_cast<int>(i), cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_AA, hierarchy);
+      }
+    }
+
+    // Display the free space map for debugging purposes.
+    cv::imshow("freespace", freespace_);
+  }
+  
+  /**
+   * @brief Generates and returns the occupancy grid for the BEV (Bird's Eye View) map.
+   * 
+   * The occupancy grid is used to represent road, obstacles, and other entities
+   * in a bird's eye view format. This function initializes and updates the 
+   * occupancy grid based on the provided BEV map and bounding box information.
+   *
+   * @return cv::Mat The occupancy grid as a CV Mat object.
+   */
+  cv::Mat TrtLightnet::getOccupancyGrid(void) {
+    return occupancy_;
+  }
+
+  /**
+   * @brief Creates the occupancy grid based on road and obstacle data.
+   *
+   * This function processes the BEV map (`bevmap_`) and bounding box data (`bbox_`) to:
+   * - Identify and mark road areas in the occupancy grid.
+   * - Map bounding boxes to 3D coordinates and project them onto the BEV map.
+   * - Render obstacles and roads in distinct colors based on a provided colormap.
+   * 
+   * @param road_ids A vector of road IDs (currently unused in the function).
+   * @param im_w Image width of the input data.
+   * @param im_h Image height of the input data.
+   * @param calibdata Camera calibration data used for coordinate transformations.
+   * @param colormap A 2D vector specifying the color for each class of objects.
+   * @param names A list of class names corresponding to the object classes.
+   * @param target A list of target class names to process.
+   */
+  void TrtLightnet::makeOccupancyGrid(std::vector<int> road_ids, const int im_w, const int im_h, const Calibration calibdata,std::vector<std::vector<int>> &colormap, std::vector<std::string> names, std::vector<std::string> &target)
+  {
+    int block_size = 4;
+    
+    occupancy_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
+    for (int x = block_size; x < GRID_W-block_size; x+=block_size) {
+      for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
+	bool flg_road = false;
+	bool flg_obstacle = false;
+	for (int xb = -block_size; xb <= block_size; xb++) {
+	  for (int yb = -block_size; yb <= block_size; yb++) {	
+	    cv::Vec3b b = bevmap_.at<cv::Vec3b>(y-yb, x-xb);
+	    flg_road = (b[0] == 128 && b[1] == 64 && b[2] == 128) ? true : false;	      
+	  }
+	}
+	if (flg_road) {
+	  for (int xb = -block_size; xb <= block_size; xb++) {
+	    for (int yb = -block_size; yb <= block_size; yb++) {
+	      cv::Vec3b &og = occupancy_.at<cv::Vec3b>(y-yb, x-xb);
+	      og[0] = 128;
+	      og[1] = 64;
+	      og[2] = 128;	  	      
+	    }
+	  }
+	}
+      }
+    }
+
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(outputW) / static_cast<float>(im_w);
+	  float scale_h = static_cast<float>(outputH) / static_cast<float>(im_h);
+	  float *buf = static_cast<float *>(output_h_.at(i - 1).get());
+	  float gran_h = static_cast<float>(GRID_H) / calibdata.max_distance;
+
+	  // Process each bounding box.
+	  for (const auto &b : bbox_) {
+	    bool flg = false;
+	    if ((names[b.classId] == "UNKNOWN") ||
+		(names[b.classId] == "CAR") ||
+		(names[b.classId] == "TRUCK") ||
+		(names[b.classId] == "BUS") ||
+		(names[b.classId] == "BICYCLE") ||
+		(names[b.classId] == "MOTORBIKE") ||
+		(names[b.classId] == "PEDESTRIAN")) {		
+	      flg = true;
+	    }
+
+	    if (!flg) {
+	      continue;
+	    }
+
+	    // Calculate coordinates for the BEV map.
+	    int xlen = (b.box.x2 - b.box.x1) ;
+	    int offset = (int)(xlen * 0.25);
+	    for (int w = b.box.x1+offset; w <= b.box.x2-offset; w++) {
+	      int cx = w;
+	      int cy = (b.box.y2+b.box.y1)/2;
+	      if (cx < 0 || cx >= im_w) continue;
+	      if (cy < 0 || cy >= im_h) continue;	      
+	      int stride = outputW * static_cast<int>(cy * scale_h);
+	      float distance = buf[stride + static_cast<int>(cx * scale_w)] * calibdata.max_distance;
+	      distance = std::min(distance, calibdata.max_distance);
+
+	      float src_x = static_cast<float>(cx);
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance;
+
+	      if (x3d > 20.0) {
+		continue;
+	      }
+
+	      x3d = (x3d + 20.0f) * GRID_W / 40.0f;
+	      int x_bev = static_cast<int>(x3d);
+	      int y_bev = static_cast<int>(GRID_H - static_cast<int>(distance * gran_h));
+	      auto color = cv::Scalar(colormap[b.classId][2], colormap[b.classId][1], colormap[b.classId][0]);
+	      x_bev = x_bev >= GRID_W ? GRID_W-1  : x_bev;
+	      x_bev = x_bev < 0 ? 0  : x_bev;
+	      y_bev = y_bev >= GRID_H ? GRID_H-1  : y_bev;
+	      y_bev = y_bev < 0 ? 0  : y_bev;	      	      
+	      // Plot a circle onto the BEV map.
+	      for (int xb = -block_size/4; xb <= block_size/4; xb++) {
+		for (int yb = -block_size/4; yb <= block_size/4; yb++) {		  
+		  int xx = x_bev - xb;
+		  int yy = y_bev - yb;
+		  xx = xx >= GRID_W ? GRID_W-1  : xx;
+		  xx = xx < 0 ? 0  : xx;
+		  yy = yy >= GRID_H ? GRID_H-1  : yy;
+		  yy = yy < 0 ? 0  : yy;	      	      		  
+		  cv::Vec3b &og = occupancy_.at<cv::Vec3b>(yy, xx);
+		  og[0] = color[0];
+		  og[1] = color[1];
+		  og[2] = color[2];		  
+		}
+	      }
+	      
+	    }
+	  }
+	}
+      }
+    }
+
+    block_size = 8;
+    for (int x = 0; x < GRID_W; x++) {
+      for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
+	bool flg_road = false;
+	bool flg_obstacle = false;
+	cv::Vec3b b = bevmap_.at<cv::Vec3b>(y, x);
+	flg_road = (b[0] == 128 && b[1] == 64 && b[2] == 128) ? true : false;	      
+	if (flg_road) {
+	  flg_road = false;
+	  for (int yb = y - block_size; yb < y; yb++) {
+	      cv::Vec3b &og = occupancy_.at<cv::Vec3b>(yb, x);
+	      if (!flg_road) {
+		flg_road = (og[0] == 128 && og[1] == 64 && og[2] == 128) ? true : false;
+	      }
+	      if (flg_road) {
+		if (og[0] == 0 && og[1] == 0 && og[2] == 0) {
+		  og[0] = 128;
+		  og[1] = 64;
+		  og[2] = 128;
+		} else if (!((og[0] == 128 && og[1] == 64 && og[2] == 128) || og[0] == 0 && og[1] == 0 && og[2] == 0)) {
+		  flg_road = false;
+		}
+	      }
+	  }
+	}
+      }
+    }    
+    cv::imshow("occupancy_grid", occupancy_);    
+  }
   
   /**
    * @brief Smoothes the depth map using road segmentation information.
@@ -1231,11 +1480,10 @@ namespace tensorrt_lightnet
    * @param im_h Image height of the original input.
    * @param calibdata Calibration data required for back projection.
    */
-  void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata)
+  void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding)
   {
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
     bevmap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
-
     // Loop through all bindings to find depth map tensors.
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -1288,6 +1536,7 @@ namespace tensorrt_lightnet
 			       masks_[0].step,
 			       d_bevmap_.get(),
 			       bevmap_.step,
+			       padding,
 			       *stream_
 			       );
 
@@ -1304,7 +1553,101 @@ namespace tensorrt_lightnet
     }
   }
 
+  /**
+   * @brief Performs a GPU-based back projection without densifying the BEV map.
+   *
+   * This function processes a depth map tensor to create a sparse BEV (Bird's Eye View) map
+   * using GPU-based back projection. The output map is visualized as `sparsemap_`.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata Calibration data containing camera parameters and configurations.
+   */
+  void TrtLightnet::makeBackProjectionGpuWithoutDensify(const int im_w, const int im_h, const Calibration calibdata)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    sparsemap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
 
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(im_w) / static_cast<float>(outputW);
+	  float scale_h = static_cast<float>(im_h) / static_cast<float>(outputH);
+	  int mask_w = masks_[0].cols;
+	  int mask_h = masks_[0].rows;
+	  int bev_size = GRID_H * GRID_W * 3;
+	  int mask_size = mask_h * mask_w * 3;
+
+	  // Allocate device memory for BEV map and mask if not already allocated.
+	  if (!d_bevmap_) {
+	    d_bevmap_ = cuda_utils::make_unique<unsigned char[]>(bev_size);
+	  }
+	  if (!d_mask_) {
+	    d_mask_ = cuda_utils::make_unique<unsigned char[]>(mask_size);
+	  }
+
+	  // Copy mask data to device memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   d_mask_.get(),
+					   masks_[0].data,
+					   sizeof(unsigned char) * mask_size,
+					   cudaMemcpyHostToDevice,
+					   *stream_
+					   ));
+
+	  // Initialize the BEV map memory on the device.
+	  cudaMemset(d_bevmap_.get(), 0, bev_size * sizeof(unsigned char));
+
+	  // Perform GPU-based back projection.
+	  getBackProjectionGpu(
+			       (const float *)output_d_.at(i - 1).get(),
+			       outputW, outputH,
+			       scale_w, scale_h,
+			       calibdata,
+			       mask_w, mask_h,
+			       (unsigned char *)d_mask_.get(),
+			       masks_[0].step,
+			       d_bevmap_.get(),
+			       sparsemap_.step,
+			       0,
+			       *stream_
+			       );
+
+	  // Copy the resulting BEV map from device to host memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   sparsemap_.data,
+					   d_bevmap_.get(),
+					   sizeof(unsigned char) * bev_size,
+					   cudaMemcpyDeviceToHost,
+					   *stream_
+					   ));
+	}
+      }
+    }
+    cv::imshow("sparse-bevmap", sparsemap_);    
+  }  
+
+  /**
+   * @brief Creates a height map from the depth map data using 3D geometry transformations.
+   *
+   * This function generates a height map by converting depth data from a tensor to a color-coded
+   * visualization, where the height values are represented in a jet colormap.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata The calibration data containing intrinsic camera parameters and max distance.
+   * @return cv::Mat The generated height map as a color-coded image.
+   */  
   cv::Mat TrtLightnet::makeHeightmap(const int im_w, const int im_h, const Calibration calibdata)
   {
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
@@ -1353,7 +1696,19 @@ namespace tensorrt_lightnet
     }
     return mask;
   }
-  
+
+  /**
+   * @brief Blends segmentation masks with an input image using GPU acceleration.
+   *
+   * This function applies segmentation masks to an input image using GPU-based 
+   * processing. It supports resizing masks and blending them with the image using 
+   * specified weights for alpha, beta, and gamma.
+   *
+   * @param image Input/output image to which the segmentation masks are applied.
+   * @param alpha Weight of the original image in the blending process.
+   * @param beta Weight of the segmentation mask in the blending process.
+   * @param gamma Scalar added to each sum during blending.
+   */  
   void TrtLightnet::blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma)
   {
     int mask_size = image.cols * image.rows * 3;
@@ -1401,6 +1756,16 @@ namespace tensorrt_lightnet
   {
     return bevmap_;
   }
+
+  /**
+   * Retrieves the generated sparse BEV map.
+   * 
+   * @return sparse bev map.
+   */      
+  cv::Mat TrtLightnet::getSparseBevMap(void)
+  {
+    return sparsemap_;
+  }  
   
   /**
    * Retrieves the generated depth maps.

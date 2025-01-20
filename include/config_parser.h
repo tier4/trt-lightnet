@@ -376,3 +376,6 @@ get_blending(void);
 
 bool
 profile_verbose(void);
+
+bool
+get_sparse_depth_flg(void);
