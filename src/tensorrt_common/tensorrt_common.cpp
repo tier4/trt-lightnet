@@ -24,6 +24,73 @@
 #include <string>
 #include <utility>
 
+// Convert BuildConfigC to tensorrt_common::BuildConfig
+extern "C" void copy_to_cpp_build_config(const BuildConfigC* src, tensorrt_common::BuildConfig* dest) {
+  if (!src || !dest) {
+    std::cerr << "Error: Null pointer in copy_to_cpp_build_config.\n";
+    return;
+  }
+
+  // Copy calib_type_str
+  dest->calib_type_str = std::string(src->calib_type_str);
+
+  // Copy other members
+  dest->dla_core_id = src->dla_core_id;
+  dest->quantize_first_layer = src->quantize_first_layer;
+  dest->quantize_last_layer = src->quantize_last_layer;
+  dest->profile_per_layer = src->profile_per_layer;
+  dest->clip_value = src->clip_value;
+  dest->sparse = src->sparse;
+
+  // Copy debug_tensors
+  dest->debug_tensors.clear();
+  for (int i = 0; i < src->num_debug_tensors && i < 10; ++i) {
+    if (src->debug_tensors[i][0] != '\0') {
+      dest->debug_tensors.emplace_back(std::string(src->debug_tensors[i]));
+    }
+  }
+}
+
+// Convert tensorrt_common::BuildConfig to BuildConfigC
+extern "C" void copy_to_c_build_config(const tensorrt_common::BuildConfig* src, BuildConfigC* dest) {
+  if (!src || !dest) return;
+
+  // Copy basic fields
+  strncpy(dest->calib_type_str, src->calib_type_str.c_str(), sizeof(dest->calib_type_str) - 1);
+  dest->calib_type_str[sizeof(dest->calib_type_str) - 1] = '\0';
+  dest->dla_core_id = src->dla_core_id;
+  dest->quantize_first_layer = src->quantize_first_layer;
+  dest->quantize_last_layer = src->quantize_last_layer;
+  dest->profile_per_layer = src->profile_per_layer;
+  dest->clip_value = src->clip_value;
+  dest->sparse = src->sparse;
+
+  // Copy debug tensors
+  dest->num_debug_tensors = std::min(static_cast<int>(src->debug_tensors.size()), 10);
+  for (int i = 0; i < dest->num_debug_tensors; ++i) {
+    strncpy(dest->debug_tensors[i], src->debug_tensors[i].c_str(), sizeof(dest->debug_tensors[i]) - 1);
+    dest->debug_tensors[i][sizeof(dest->debug_tensors[i]) - 1] = '\0';
+  }
+}
+
+// Print the contents of BuildConfigC
+extern "C" void print_build_config_c(const BuildConfigC* config) {
+  if (!config) return;
+
+  std::cout << "Calibration Type: " << config->calib_type_str << "\n";
+  std::cout << "DLA Core ID: " << config->dla_core_id << "\n";
+  std::cout << "Quantize First Layer: " << (config->quantize_first_layer ? "Yes" : "No") << "\n";
+  std::cout << "Quantize Last Layer: " << (config->quantize_last_layer ? "Yes" : "No") << "\n";
+  std::cout << "Profile Per Layer: " << (config->profile_per_layer ? "Enabled" : "Disabled") << "\n";
+  std::cout << "Clip Value: " << config->clip_value << "\n";
+  std::cout << "Sparse: " << (config->sparse ? "Enabled" : "Disabled") << "\n";
+
+  std::cout << "Debug Tensors (" << config->num_debug_tensors << "):\n";
+  for (int i = 0; i < config->num_debug_tensors; ++i) {
+    std::cout << "  " << config->debug_tensors[i] << "\n";
+  }
+}
+
 namespace
 {
 template <class T>
@@ -727,3 +794,4 @@ std::vector<std::string> TrtCommon::getDebugTensorNames(void)
 }
 
 }  // namespace tensorrt_common
+

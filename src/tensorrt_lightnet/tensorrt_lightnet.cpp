@@ -56,6 +56,8 @@ SOFTWARE.
 #include <iostream>
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 extern const unsigned char jet_colormap[256][3];
 extern const unsigned char magma_colormap[256][3];
 
@@ -76,6 +78,23 @@ calculateAngle(double x1, double y1, double x2, double y2) {
   double angleDegrees = angleRadians * (180.0 / M_PI);
 
   return angleDegrees;
+}
+
+std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
+{  
+  std::vector<std::vector<cv::Point>> contours;  
+  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  return contours;
+}
+
+void write_json_with_order(const json& j, const std::string& filename) {
+  std::ofstream file(filename);
+  if (!file) {
+    std::cerr << "Error: Could not create JSON file." << std::endl;
+    return;
+  }
+  file << std::setw(4) << j << std::endl;
+  file.close();
 }
 
 /**
@@ -304,14 +323,16 @@ namespace tensorrt_lightnet
 
       calibration_table.replace_extension(table_extension);
       histogram_table.replace_extension("histogram.table");
-
+      
       // Initialize the correct calibrator based on the calibration type.
       std::unique_ptr<nvinfer1::IInt8Calibrator> calibrator = initializeCalibrator(build_config, stream, calibration_table, histogram_table, norm_factor_);
 
-      trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      //trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      trt_common_ = std::make_shared<tensorrt_common::TrtCommon>(      
 								 model_path, precision, std::move(calibrator), batch_config, max_workspace_size, build_config);
     } else {
-      trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      trt_common_ = std::make_shared<tensorrt_common::TrtCommon>(            
+								 //trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
 								 model_path, precision, nullptr, batch_config, max_workspace_size, build_config);
     }
 
@@ -569,7 +590,6 @@ namespace tensorrt_lightnet
     }
 
     trt_common_->enqueueV2(buffers.data(), *stream_, nullptr);
-
     // Retrieve output tensors from device buffers
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -588,11 +608,11 @@ namespace tensorrt_lightnet
    * @param names The names of the detected classes.
    */
   void TrtLightnet::drawBbox(cv::Mat &img, std::vector<BBoxInfo> bboxes, std::vector<std::vector<int>> &colormap, std::vector<std::string> names)
-  {    
+  {
     for (const auto& bbi : bboxes) {
       int id = bbi.classId;
       std::stringstream stream;
-      if (names[id] == "none") continue;
+      if (!names.empty() && names[id] == "none") continue;
       if (!names.empty()) {
 	stream << std::fixed << std::setprecision(2) << names[id] << "  " << bbi.prob;
       } else {
@@ -600,7 +620,6 @@ namespace tensorrt_lightnet
       }
       
       cv::Scalar color = colormap.empty() ? cv::Scalar(255, 0, 0) : cv::Scalar(colormap[id][2], colormap[id][1], colormap[id][0]);
-      
       if (bbi.isHierarchical) {
 	std::string c_name;
 	if (bbi.subClassId == 0) {
@@ -610,7 +629,7 @@ namespace tensorrt_lightnet
 	} else {
 	  color = cv::Scalar(0, 0, 255);
 	}
-	if (names[id] == "arrow") {
+	if (!names.empty() && names[id] == "arrow") {
 	  float sin = bbi.sin;
 	  float cos = bbi.cos;
 	  float deg = atan2(sin, cos) * 180.0 / M_PI;
@@ -679,7 +698,6 @@ namespace tensorrt_lightnet
 	detection_count++;
       }
     }
-
     bbox_ = nonMaximumSuppression(nms_threshold_, bbox_); // Apply NMS and return the filtered bounding boxes.
     //bbox_ = nmsAllClasses(nms_threshold_, bbox_, num_class_); // Apply NMS and return the filtered bounding boxes.
   }
@@ -728,6 +746,26 @@ namespace tensorrt_lightnet
   std::vector<BBoxInfo> TrtLightnet::getBbox()
   {
     return bbox_;
+  }
+
+  std::vector<std::string> TrtLightnet::getNames()
+  {
+    return names_;
+  }
+
+  void TrtLightnet::setNames(std::vector<std::string> names)
+  {
+    names_ = names;
+  }
+
+  void TrtLightnet::setDetectionColormap(std::vector<std::vector<int>> &colormap)
+  {
+    colormap_ = colormap;
+  }
+
+  std::vector<std::vector<int>> TrtLightnet::getDetectionColormap(void)
+  {
+    return colormap_;
   }
 
   /**
@@ -980,7 +1018,6 @@ namespace tensorrt_lightnet
     for (int x = block_size; x < GRID_W-block_size; x+=block_size) {
       for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
 	bool flg_road = false;
-	bool flg_obstacle = false;
 	for (int xb = -block_size; xb <= block_size; xb++) {
 	  for (int yb = -block_size; yb <= block_size; yb++) {	
 	    cv::Vec3b b = bevmap_.at<cv::Vec3b>(y-yb, x-xb);
@@ -1091,7 +1128,6 @@ namespace tensorrt_lightnet
     for (int x = 0; x < GRID_W; x++) {
       for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
 	bool flg_road = false;
-	bool flg_obstacle = false;
 	cv::Vec3b b = bevmap_.at<cv::Vec3b>(y, x);
 	flg_road = (b[0] == 128 && b[1] == 64 && b[2] == 128) ? true : false;	      
 	if (flg_road) {
@@ -1106,7 +1142,7 @@ namespace tensorrt_lightnet
 		  og[0] = 128;
 		  og[1] = 64;
 		  og[2] = 128;
-		} else if (!((og[0] == 128 && og[1] == 64 && og[2] == 128) || og[0] == 0 && og[1] == 0 && og[2] == 0)) {
+		} else if (!((og[0] == 128 && og[1] == 64 && og[2] == 128) || (og[0] == 0 && og[1] == 0 && og[2] == 0))) {
 		  flg_road = false;
 		}
 	      }
@@ -2204,20 +2240,6 @@ namespace tensorrt_lightnet
 	  cudaMemcpy(mask.data, d_mask_.get(), outputW * outputH * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost);	  	  
 	  cudaStreamSynchronize(*stream_);
 	  masks_.push_back(mask);
-	  break;
-	  
-
-	  const int *buf = (int *)output_h_.at(i-1).get();
-	  for (int y = 0; y < outputH; y++) {
-	    int stride = outputW * y;
-	    cv::Vec3b *ptr = mask.ptr<cv::Vec3b>(y);
-
-	    for (int x = 0; x < outputW; x++) {
-	      int id = buf[stride + x];
-	      ptr[x] = argmax2bgr[id]; // Mapping class index to color.
-	    }
-	  }
-	  masks_.push_back(mask);
 	} else if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
 	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
 	  const float *buf = (float *)output_h_.at(i-1).get();
@@ -3058,4 +3080,156 @@ namespace tensorrt_lightnet
   void TrtLightnet::clearKeypoint() {
     keypoint_.clear();
   }
+
+  /**
+   * @brief Writes segmentation annotations to a JSON file.
+   *
+   * This function processes segmentation output from a TensorRT model,
+   * generates binary masks for each class, extracts polygon contours,
+   * and saves the annotations in JSON format.
+   *
+   * @param json_path Path to the output JSON file.
+   * @param image_name Name of the image being processed.
+   * @param width Width of the original image.
+   * @param height Height of the original image.
+   * @param colormap Vector of Colormap objects mapping class indices to names.
+   */  
+  void TrtLightnet::writeSegmentationAnnotation(const std::string json_path, const std::string image_name, int width, int height, std::vector<Colormap> colormap)
+  {
+    json::object_t imageAnnotationsOrdered;
+    imageAnnotationsOrdered["name"] = image_name;
+    imageAnnotationsOrdered["width"] = width;
+    imageAnnotationsOrdered["height"] = height;  
+    imageAnnotationsOrdered["annotations"] = json::array();    
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
+	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+	  
+	  for (int c = 1; c < (int)colormap.size(); c++) {
+	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	    cv::Mat resized;	    
+	    for (int x = 0; x < outputW; x++) {
+	      for (int y = 0; y < outputH; y++) {
+		const int id = argmax[static_cast<int>(x + outputW * y)];
+		if (id == c) {
+		  mask.at<uchar>(y, x) = 255;
+		}
+	      }	      
+	    }
+	    cv::resize(mask, resized, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
+	    std::vector<std::vector<cv::Point>> contours = get_polygons(resized);
+
+	    for (size_t i = 0; i < contours.size(); ++i) {
+	      json::object_t annotationOrdered;      
+	      annotationOrdered["type"] = "segmentation";
+	      annotationOrdered["title"] = colormap[c].name;
+	      annotationOrdered["value"] = colormap[c].name;	      
+	      json contourJson;
+	      json pointsArray = json::array();
+	      for (size_t j = 0; j < contours[i].size(); ++j) {
+		pointsArray.push_back(contours[i][j].x);
+		pointsArray.push_back(contours[i][j].y);
+	      }
+	      annotationOrdered["points"].push_back({pointsArray});
+	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);
+	    }
+	  }
+	}
+	json jsonData = json::array();  
+	jsonData.push_back(imageAnnotationsOrdered);
+	write_json_with_order(jsonData, json_path);
+      }
+    }
+  }
+
+  std::string TrtLightnet::getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap)
+  {
+    json::object_t imageAnnotationsOrdered;
+    imageAnnotationsOrdered["name"] = image_name;
+    imageAnnotationsOrdered["width"] = width;
+    imageAnnotationsOrdered["height"] = height;  
+    imageAnnotationsOrdered["annotations"] = json::array();    
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
+	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+	  
+	  for (int c = 1; c < (int)colormap.size(); c++) {
+	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	    cv::Mat resized;	    
+	    for (int x = 0; x < outputW; x++) {
+	      for (int y = 0; y < outputH; y++) {
+		const int id = argmax[static_cast<int>(x + outputW * y)];
+		if (id == c) {
+		  mask.at<uchar>(y, x) = 255;
+		}
+	      }	      
+	    }
+	    cv::resize(mask, resized, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
+	    std::vector<std::vector<cv::Point>> contours = get_polygons(resized);
+
+	    for (size_t i = 0; i < contours.size(); ++i) {
+	      json::object_t annotationOrdered;      
+	      annotationOrdered["type"] = "segmentation";
+	      annotationOrdered["title"] = colormap[c].name;
+	      annotationOrdered["value"] = colormap[c].name;	      
+	      json contourJson;
+	      json pointsArray = json::array();
+	      for (size_t j = 0; j < contours[i].size(); ++j) {
+		pointsArray.push_back(contours[i][j].x);
+		pointsArray.push_back(contours[i][j].y);
+	      }
+	      annotationOrdered["points"].push_back({pointsArray});
+	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);
+	    }
+	  }
+	}
+
+      }
+    }
+    std::string json_string = json(imageAnnotationsOrdered).dump();    
+    return json_string;
+  }  
+
+  /**
+   * @brief Retrieves the input size of the TensorRT model.
+   *
+   * This function extracts the input dimensions of the TensorRT model's first binding tensor.
+   *
+   * @param batch Pointer to store batch size.
+   * @param chan Pointer to store the number of channels.
+   * @param height Pointer to store the height.
+   * @param width Pointer to store the width.
+   */  
+  void TrtLightnet::getInputSize(int *batch, int *chan, int *height, int *width) {
+    if (!trt_common_) {
+      std::cerr << "Error: trt_common_ is not initialized." << std::endl;
+      return;
+    }
+    auto input_dims = trt_common_->getBindingDimensions(0);
+    *batch = static_cast<float>(input_dims.d[0]);
+    *chan = static_cast<float>(input_dims.d[1]);
+    *height = static_cast<float>(input_dims.d[2]);
+    *width = static_cast<float>(input_dims.d[3]);
+  }
+  
 }  // namespace tensorrt_lightnet
+

@@ -45,6 +45,7 @@ struct PathConfig {
   bool flg_save; ///< Flag indicating whether to save inference output.
   std::string save_path; ///< Directory path where output should be saved.
   bool flg_save_debug_tensors;
+  std::string json_path;
 };
 
 /**
@@ -60,14 +61,6 @@ struct VisualizationConfig {
   std::vector<int> road_ids;
 };
 
-template <typename ... Args>
-std::string format(const std::string& fmt, Args ... args )
-{
-  size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
-  std::vector<char> buf(len + 1);
-  std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
-  return std::string(&buf[0], &buf[0] + len);
-}
 
 cv::Mat concatHorizontal(const cv::Mat& mat1, const cv::Mat& mat2) {
   if (mat1.empty() || mat2.empty()) {
@@ -699,6 +692,25 @@ void writeCrossTaskInconsistency(std::shared_ptr<tensorrt_lightnet::TrtLightnet>
   }
 }
 
+
+void write_annotation_json(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<tensorrt_lightnet::Colormap> colormap, std::vector<std::string> &names, std::string json_path, std::string filename)
+{
+  fs::path p = fs::path(json_path) / "json";
+  std::string json_name = filename;
+  fs::create_directories(fs::path(json_path));
+  fs::create_directories(p);  
+  if (json_name.find(".jpg") != std::string::npos) {
+    replaceOtherStr(json_name, ".jpg", ".json");
+  }
+  if (json_name.find(".png") != std::string::npos) {
+    replaceOtherStr(json_name, ".png", ".json");
+  }  
+  if (json_name.find(".pcd.bin") != std::string::npos) {  
+    replaceOtherStr(json_name, ".pcd.bin", ".json");
+  }  
+  trt_lightnet->writeSegmentationAnnotation(p / json_name, filename, image.cols, image.rows, colormap);
+}
+
 /**
  * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
  * data from a TrtLightnet object.
@@ -800,6 +812,7 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
     }
   }
   if (masks.size() && depthmaps.size()) {
+    /*
     fs::path p = fs::path(save_path) / "bevmap";
     fs::create_directory(p);
     cv::Mat bevmap = trt_lightnet->getBevMap();
@@ -816,6 +829,7 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
 	saveImage(sparsemap, p.string(), png_name);	
       }
     }
+    */
   }  
 }
 
@@ -1049,6 +1063,10 @@ void inferLightNetPipeline(
     saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, dstPath.string(), filename);
   }
 
+  if (path_config.json_path != "") {
+    write_annotation_json(trt_lightnet, image, visualization_config.seg_colormap, visualization_config.names, path_config.json_path, filename);
+  }
+  
   // Save debug tensors if the debug save flag is enabled
   if (path_config.flg_save_debug_tensors && !path_config.save_path.empty()) {
     fs::path debugPath = fs::path(path_config.save_path) / "debug_tensors";
@@ -1152,7 +1170,8 @@ main(int argc, char* argv[])
     .output_path = get_output_path(),
     .flg_save = getSaveDetections(),
     .save_path = getSaveDetectionsPath(),
-    .flg_save_debug_tensors = get_save_debug_tensors()
+    .flg_save_debug_tensors = get_save_debug_tensors(),
+    .json_path = get_json_path()
   };
 
   std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();  

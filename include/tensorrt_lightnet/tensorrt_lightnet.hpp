@@ -25,7 +25,38 @@
 #include <string>
 #include <vector>
 #include <NvInfer.h>
+#include <cstring>
+#include <iostream>
+/**
+ * Checks if a given value is contained within a string. This template function is versatile,
+ * allowing for different types of values to be checked against the string, assuming the value
+ * can be sensibly searched within a string context.
+ *
+ * @tparam T The type of the value to be checked. Must be compatible with std::string's find method.
+ * @param s The string to search within.
+ * @param v The value to search for within the string. This value is converted to a suitable format
+ *          for comparison with the contents of the string.
+ * @return true if the value is found within the string, false otherwise.
+ */
+template<class T> bool contain(const std::string& s, const T& v) {
+  return s.find(v) != std::string::npos;
+}
 
+template <typename ... Args>
+static std::string format(const std::string& fmt, Args ... args )
+{
+  size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
+  std::vector<char> buf(len + 1);
+  std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
+  return std::string(&buf[0], &buf[0] + len);
+}
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  
 struct ucharRGB {
   unsigned char r, g, b;
 };
@@ -78,14 +109,6 @@ struct Calibration {
 #define GRID_H 1280
 #define GRID_W 960
 
-
-extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
-				 int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, int padding, cudaStream_t stream);
-
-extern void mapArgmaxtoColorGpu(unsigned char *output, int *input, 
-				int width, int height, const ucharRGB *colorMap, cudaStream_t stream);
-
-
 /**
  * Configuration settings related to the model being used for inference.
  * Includes paths, classification thresholds, and anchor configurations.
@@ -96,7 +119,8 @@ struct ModelConfig {
   float score_threshold; ///< Threshold for classification scores to consider a detection valid.
   std::vector<int> anchors; ///< Anchor sizes for the model.
   int num_anchors; ///< Number of anchors.
-  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).  
+  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).
+  std::vector<std::string> names;
 };
 
 /**
@@ -118,21 +142,14 @@ struct InferenceConfig {
   size_t workspace_size; ///< Maximum workspace size for TensorRT.
 };
 
-/**
- * Checks if a given value is contained within a string. This template function is versatile,
- * allowing for different types of values to be checked against the string, assuming the value
- * can be sensibly searched within a string context.
- *
- * @tparam T The type of the value to be checked. Must be compatible with std::string's find method.
- * @param s The string to search within.
- * @param v The value to search for within the string. This value is converted to a suitable format
- *          for comparison with the contents of the string.
- * @return true if the value is found within the string, false otherwise.
- */
-template<class T> bool contain(const std::string& s, const T& v) {
-  return s.find(v) != std::string::npos;
-}
 
+extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
+				 int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, int padding, cudaStream_t stream);
+
+extern void mapArgmaxtoColorGpu(unsigned char *output, int *input, 
+				int width, int height, const ucharRGB *colorMap, cudaStream_t stream);
+
+  
 namespace tensorrt_lightnet
 {
   /**
@@ -210,15 +227,6 @@ namespace tensorrt_lightnet
     float cos;                      ///< Cosine of an angle, if applicable to the object.
     std::vector<KeypointInfo> keypoint; ///< List of associated keypoints for the detected object.
   };
-
-  template <typename ... Args>
-  static std::string format(const std::string& fmt, Args ... args )
-  {
-    size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
-    std::vector<char> buf(len + 1);
-    std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
-    return std::string(&buf[0], &buf[0] + len);
-  }
   
   inline std::string getTLRStringFromBBox(BBoxInfo bbi, std::vector<std::string> &names)
   {
@@ -454,6 +462,12 @@ public:
    */
   std::vector<BBoxInfo> getBbox();  
 
+
+  std::vector<std::string> getNames();
+
+  void setNames(std::vector<std::string> names);
+  std::vector<std::vector<int>> getDetectionColormap(void);
+  void setDetectionColormap(std::vector<std::vector<int>> &colormap);
   /**
    * Generates depth maps from the network's output tensors that are not related to bounding box detections.
    * @param depth_format depthmap format like "magma" and "grayscale".
@@ -897,11 +911,41 @@ public:
    * @param targetAspectRatio The maximum allowable aspect ratio. Bounding boxes with aspect ratios exceeding this value are removed.
    */
   void removeAspectRatioBoxes(std::vector<std::string> &names, std::vector<std::string> &target, float targetAspectRatio);
+
+  /**
+   * @brief Writes segmentation annotations to a JSON file.
+   *
+   * This function processes segmentation output from a TensorRT model,
+   * generates binary masks for each class, extracts polygon contours,
+   * and saves the annotations in JSON format.
+   *
+   * @param json_path Path to the output JSON file.
+   * @param image_name Name of the image being processed.
+   * @param width Width of the original image.
+   * @param height Height of the original image.
+   * @param colormap Vector of Colormap objects mapping class indices to names.
+   */  
+  void writeSegmentationAnnotation(const std::string json_path, const std::string image_name, int width, int height, std::vector<Colormap> colormap);
+
+  /**
+   * @brief Retrieves the input size of the TensorRT model.
+   *
+   * This function extracts the input dimensions of the TensorRT model's first binding tensor.
+   *
+   * @param batch Pointer to store batch size.
+   * @param chan Pointer to store the number of channels.
+   * @param height Pointer to store the height.
+   * @param width Pointer to store the width.
+   */
+
+  std::string getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap);
+  
+  void getInputSize(int *batch, int *chan, int *height, int *width);
   
   /**
-   * Unique pointer to a TensorRT common utility class, encapsulating common TensorRT operations.
+   * Shared pointer to a TensorRT common utility class, encapsulating common TensorRT operations.
    */
-  std::unique_ptr<tensorrt_common::TrtCommon> trt_common_;
+  std::shared_ptr<tensorrt_common::TrtCommon> trt_common_;  
 
   /**
    * Host-side input buffer for the model, typically used for pre-processing input data before inference.
@@ -983,6 +1027,13 @@ public:
    */  
   std::vector<BBoxInfo> bbox_;
 
+  /**
+   * Stores names for detetction
+   */
+  std::vector<std::string>  names_;
+
+  std::vector<std::vector<int>> colormap_;
+  
   /**
    * Stores mask images for each detected object, typically used in segmentation tasks.
    */
@@ -1101,5 +1152,8 @@ public:
 
 }  // namespace tensorrt_lightnet
 
+#ifdef __cplusplus
+}
+#endif // __cplusplus
 #endif  // TENSORRT_LIGHTNET__TENSORRT_LIGHTNET_HPP_
 

@@ -193,6 +193,9 @@ DEFINE_bool(verbose, false,
 DEFINE_bool(sparse_depth, false,
             "[OPTIONAL] Flag to profile verbose");
 
+DEFINE_string(json, "",
+              "[OPTIONAL] json dir path");
+
 std::string
 get_onnx_path(void)
 {
@@ -825,4 +828,10 @@ bool
 get_sparse_depth_flg(void)
 {
   return FLAGS_sparse_depth;
+}
+
+std::string
+get_json_path(void)
+{
+  return FLAGS_json;
 }

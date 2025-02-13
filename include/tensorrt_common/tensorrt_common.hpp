@@ -37,7 +37,9 @@ namespace fs = ::std::experimental::filesystem;
 #include <sstream>
 #include <string>
 #include <vector>
+#include <cstring>
 
+  
 namespace tensorrt_common
 {
 /**
@@ -109,6 +111,7 @@ struct BuildConfig
   }
 };
 
+  
 nvinfer1::Dims get_input_dims(const std::string & onnx_file_path);
 
 const std::array<std::string, 3> valid_precisions = {"fp32", "fp16", "int8"};
@@ -244,4 +247,28 @@ private:
 
 }  // namespace tensorrt_common
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// C-compatible structure
+struct BuildConfigC {
+  char calib_type_str[64];
+  int dla_core_id;
+  bool quantize_first_layer;
+  bool quantize_last_layer;
+  bool profile_per_layer;
+  double clip_value;
+  bool sparse;
+  char debug_tensors[10][64];
+  int num_debug_tensors;
+};
+
+
+  extern "C" void copy_to_cpp_build_config(const BuildConfigC* src, tensorrt_common::BuildConfig* dest);
+extern "C" void copy_to_c_build_config(const tensorrt_common::BuildConfig* src, BuildConfigC* dest);
+extern "C" void print_build_config_c(const BuildConfigC* config);
+#ifdef __cplusplus
+}
+#endif // __cplusplus
 #endif  // TENSORRT_COMMON__TENSORRT_COMMON_HPP_

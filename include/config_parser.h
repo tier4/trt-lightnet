@@ -379,3 +379,6 @@ profile_verbose(void);
 
 bool
 get_sparse_depth_flg(void);
+
+std::string
+get_json_path(void);
