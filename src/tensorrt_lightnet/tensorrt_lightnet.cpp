@@ -601,6 +601,43 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * Prepares the inference by ensuring the network is initialized and setting up the input tensor.
+   * @return True if the network is already initialized; false otherwise.
+   */
+  bool TrtLightnet::doInference(const int batchSize)
+  {
+    if (!trt_common_->isInitialized()) {
+      return false;
+    }
+    return infer(batchSize);
+  }
+
+  /**
+   * Executes the inference operation by setting up the buffers, launching the network, and transferring the outputs.
+   * @return Always returns true to indicate the inference operation was called.
+   */
+  bool TrtLightnet::infer(const int batchSize)
+  {
+    std::vector<void *> buffers = {input_d_.get()};
+    for (int i = 0; i < static_cast<int>(output_d_.size()); i++) {
+      buffers.push_back(output_d_.at(i).get());
+    }
+
+    trt_common_->enqueueV2(buffers.data(), *stream_, nullptr);
+
+    // Retrieve output tensors from device buffers
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      auto dims = trt_common_->getBindingDimensions(i);
+      dims.d[0] = batchSize;
+      auto output_size = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
+      output_size *= batchSize;
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(output_h_.at(i-1).get(), output_d_.at(i-1).get(), sizeof(float) * output_size, cudaMemcpyDeviceToHost, *stream_));
+    }
+    cudaStreamSynchronize(*stream_);
+    return true;
+  }
+  
+  /**
    * Draws bounding boxes on an image based on detection results.
    * @param img The image to draw bounding boxes on.
    * @param bboxes The detected bounding boxes.
@@ -748,10 +785,51 @@ namespace tensorrt_lightnet
     return bbox_;
   }
 
+  std::vector<BBoxInfo> TrtLightnet::getBbox(const int imageH, const int imageW, const int batchIndex)
+  {
+    bbox_.clear();
+    const auto inputDims = trt_common_->getBindingDimensions(0);
+    int inputW = inputDims.d[3];
+    int inputH = inputDims.d[2];
+    // Channel size formula to identify relevant tensor outputs for bounding boxes.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    int tlr_size = (4 + 1 + num_class_ + 3 + 2) * num_anchor_;
+
+    int detection_count = 0;
+    for (int i = 0; i < trt_common_->getNbBindings(); i++) {
+      if (trt_common_->bindingIsInput(i)) {
+	continue;
+      }
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int gridW = dims.d[3];
+      int gridH = dims.d[2];
+      int chan = dims.d[1];
+      float *p_output = &((output_h_.at(i-1).get())[batchIndex * (gridW * gridH * chan)]);
+      if (chan_size == chan) { // Filtering out the tensors that match the channel size for detections.
+	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, p_output, gridW, gridH);
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
+      } else if (tlr_size == chan) {
+	//Decode TLR Tensor
+	std::vector<BBoxInfo> b = decodeTLRTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, p_output, gridW, gridH);
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
+      }
+    }
+
+    return nonMaximumSuppression(nms_threshold_, bbox_); // Apply NMS and return the filtered bounding boxes.
+  }    
+  
+  
   std::vector<std::string> TrtLightnet::getNames()
   {
     return names_;
   }
+
+  int TrtLightnet::getBatchSize()
+  {
+    return batch_size_;
+  }  
 
   void TrtLightnet::setNames(std::vector<std::string> names)
   {

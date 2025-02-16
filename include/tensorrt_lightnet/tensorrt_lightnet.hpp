@@ -331,6 +331,18 @@ public:
   bool infer(void);
 
   /**
+   * Performs inference on the current data.
+   * @return true if inference was successful, false otherwise.
+   */
+  bool doInference(const int batchSize);
+
+  /**
+   * Alias for doInference, performs inference on the current data.
+   * @return true if inference was successful, false otherwise.
+   */
+  bool infer(const int batchSize);  
+  
+  /**
    * Draws bounding boxes on an image.
    * @param img the image on which to draw bounding boxes.
    * @param bboxes the bounding boxes to draw.
@@ -463,8 +475,12 @@ public:
   std::vector<BBoxInfo> getBbox();  
 
 
+  std::vector<BBoxInfo> getBbox(const int imageH, const int imageW, const int batchIndex);
+
   std::vector<std::string> getNames();
 
+  int getBatchSize();
+  
   void setNames(std::vector<std::string> names);
   std::vector<std::vector<int>> getDetectionColormap(void);
   void setDetectionColormap(std::vector<std::vector<int>> &colormap);

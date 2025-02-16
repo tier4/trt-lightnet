@@ -653,4 +653,282 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     return annotation_str.c_str();
   }
 
+
+/**
+ * @brief Perform inference on a subset of bounding boxes detected by the main network using a subnet.
+ *
+ * @param lightnet Pointer to the main TrtLightnet instance.
+ * @param subnet Pointer to the subnet TrtLightnet instance.
+ * @param image Input image.
+ * @param width Width of the image.
+ * @param height Height of the image.
+ * @param cuda Flag indicating whether to use CUDA.
+ * @param target Array of target class names.
+ * @param count Number of target classes.
+ */
+void infer_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet, std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet, cv::Mat &image, int width, int height, bool cuda, char** target, int count) {
+    lightnet->clearSubnetBbox();
+    std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
+    auto names = lightnet->getNames();
+    int num = static_cast<int>(bbox.size());
+    std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
+
+    for (int i = 0; i < num; i++) {
+        auto b = bbox[i];
+        bool flg = false;
+
+        for (int t = 0; t < count; t++) {
+            if (std::string(target[t]) == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+
+        if (!flg) continue;
+
+        cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
+        cv::Mat cropped = image(roi);
+        subnet->preprocess({cropped});
+        subnet->doInference();
+        subnet->makeBbox(cropped.rows, cropped.cols);
+
+        auto bb = subnet->getBbox();
+        for (auto &box : bb) {
+            box.box.x1 += b.box.x1;
+            box.box.y1 += b.box.y1;
+            box.box.x2 += b.box.x1;
+            box.box.y2 += b.box.y1;
+        }
+        subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
+    }
+    lightnet->appendSubnetBbox(subnetBbox);
+    lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
+
+/**
+ * @brief Perform batch inference on a subset of bounding boxes detected by the main network using a subnet.
+ *
+ * @param lightnet Pointer to the main TrtLightnet instance.
+ * @param subnet Pointer to the subnet TrtLightnet instance.
+ * @param image Input image.
+ * @param width Width of the image.
+ * @param height Height of the image.
+ * @param cuda Flag indicating whether to use CUDA.
+ * @param target Array of target class names.
+ * @param count Number of target classes.
+ */
+void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet, std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet, cv::Mat &image, int width, int height, bool cuda, char** target, int count) {
+    lightnet->clearSubnetBbox();
+    std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
+    auto names = lightnet->getNames();
+    int num = static_cast<int>(bbox.size());
+    int maxBatchSize = std::min(subnet->getBatchSize(), num);
+
+    std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
+    std::vector<cv::Mat> cropped;
+
+    for (int bs = 0; bs < maxBatchSize; bs++) {
+        auto b = bbox[bs];
+        bool flg = false;
+
+        for (int t = 0; t < count; t++) {
+            if (std::string(target[t]) == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+
+        if (!flg) continue;
+
+        cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
+        cropped.push_back(image(roi));
+    }
+
+    subnet->preprocess(cropped);
+    subnet->doInference(static_cast<int>(cropped.size()));
+
+    int actual_batch_size = 0;
+    for (int bs = 0; bs < maxBatchSize; bs++) {
+        auto b = bbox[bs];
+        bool flg = false;
+
+        for (int t = 0; t < count; t++) {
+            if (std::string(target[t]) == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+
+        if (!flg) continue;
+
+        auto bb = subnet->getBbox(cropped[actual_batch_size].rows, cropped[actual_batch_size].cols, actual_batch_size);
+        for (auto &box : bb) {
+            box.box.x1 += b.box.x1;
+            box.box.y1 += b.box.y1;
+            box.box.x2 += b.box.x1;
+            box.box.y2 += b.box.y1;
+        }
+        subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
+        actual_batch_size++;
+    }
+
+    lightnet->appendSubnetBbox(subnetBbox);
+    lightnet->doNonMaximumSuppressionForSubnetBbox();
+}
+
+  
+  /**
+   * @brief Perform inference with the TrtLightnet model.
+   * 
+   * @param instance Pointer to the TrtLightnet instance.
+   * @param img_data Pointer to the image data.
+   * @param width Image width.
+   * @param height Image height.
+   * @param cuda If true, use GPU for preprocessing; otherwise, use CPU.
+   */
+  void infer_multi_stage_lightnet_wrapper(void* instance, void* sub_instance, unsigned char* img_data, int width, int height, bool cuda, char** target, int count)
+  {
+
+    if (!instance || !img_data || !sub_instance) {
+      std::cerr << "Error: Null pointer in infer_lightnet_wrapper." << std::endl;
+      return;
+    }
+
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    auto subnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(sub_instance);    
+    cv::Mat image(height, width, CV_8UC3, img_data);
+
+    // Preprocessing
+    if (cuda) {
+      lightnet->preprocess_gpu({image});
+    } else {
+      lightnet->preprocess({image});
+    }
+
+    // Inference
+    lightnet->doInference();
+
+    // Postprocessing
+    lightnet->makeBbox(image.rows, image.cols);
+
+
+    int maxBatchSize = subnet->getBatchSize();
+    if (maxBatchSize > 1) {
+      infer_batch_subnet(lightnet, subnet, image, width, height, cuda, target, count); 
+    } else {
+      infer_subnet(lightnet, subnet, image, width, height, cuda, target, count);       
+    }
+  }
+  
+ /**
+ * @brief Retrieve the bounding boxes detected by the subnet in a C-compatible array.
+ * 
+ * @param instance Pointer to the main TrtLightnet instance.
+ * @param size Output parameter for the size of the bounding box array.
+ * @return Pointer to an array of BBoxInfoC.
+ */
+BBoxInfoC* get_subnet_bbox_array(void* instance, int* size) {
+    if (!instance) {
+        std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
+        return nullptr;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    std::vector<tensorrt_lightnet::BBoxInfo> bbox_ = lightnet->getSubnetBbox();
+
+    bbox_c_array.clear();
+    for (const auto& bbox : bbox_) {
+        BBoxInfoC bbox_c;
+        bbox_c.box = {bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2};
+        bbox_c.label = bbox.label;
+        bbox_c.classId = bbox.classId;
+        bbox_c.prob = bbox.prob;
+        bbox_c.isHierarchical = bbox.isHierarchical;
+        bbox_c.subClassId = bbox.subClassId;
+        bbox_c.sin = bbox.sin;
+        bbox_c.cos = bbox.cos;
+
+        bbox_c.num_keypoints = bbox.keypoint.size();
+        static std::vector<KeypointInfoC> keypoints_c;
+        keypoints_c.clear();
+        for (const auto& kp : bbox.keypoint) {
+            keypoints_c.push_back({kp.id_prob, kp.isOccluded, kp.attr_prob,
+                kp.lx0, kp.ly0, kp.lx1, kp.ly1, kp.rx0, kp.ry0, kp.rx1, kp.ry1, kp.bot, kp.left});
+        }
+        bbox_c.keypoints = keypoints_c.data();
+        bbox_c_array.push_back(bbox_c);
+    }
+    *size = bbox_c_array.size();
+    return bbox_c_array.data();
+}
+
+/**
+ * @brief Apply a blur effect to image regions based on bounding boxes detected by the subnet.
+ * 
+ * @param instance Pointer to the main TrtLightnet instance.
+ * @param sub_instance Pointer to the subnet TrtLightnet instance.
+ * @param img_data Image data in BGR format.
+ * @param width Image width.
+ * @param height Image height.
+ */
+void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int width, int height) {
+    cv::Mat image(height, width, CV_8UC3, img_data);
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    auto subnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(sub_instance);    
+    cv::Mat cropped;
+    int kernel = 15;
+    std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
+
+    auto names = lightnet->getNames();
+    auto subnet_names = subnet->getNames();
+
+    int num = static_cast<int>(bbox.size());
+    for (int i = 0; i < num; i++) {
+        auto b = bbox[i];
+        bool flg = false;
+        for (auto &t : subnet_names) {
+            if (t == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+        if (!flg) continue;
+
+        int subnet_id = -1;
+        for (int j = 0; j < static_cast<int>(subnet_names.size()); j++) {
+            if (names[b.classId] == subnet_names[j]) {
+                subnet_id = j;
+                break;
+            }
+        }
+        if (subnet_id != -1) {
+            b.label = subnet_id;
+            b.classId = subnet_id;    
+            auto bb = {b};
+            lightnet->appendSubnetBbox(bb);
+        }    
+    }
+    lightnet->doNonMaximumSuppressionForSubnetBbox();
+
+    std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = lightnet->getSubnetBbox();
+
+    for (auto &b : subnet_bbox) {
+        if ((b.box.x2 - b.box.x1) > kernel && (b.box.y2 - b.box.y1) > kernel / 2) {
+            int width = b.box.x2 - b.box.x1;
+            int height = b.box.y2 - b.box.y1;
+            int w_offset = width * 0.0;
+            int h_offset = height * 0.0;      
+            cv::Rect roi(b.box.x1 + w_offset, b.box.y1 + h_offset, width - w_offset * 2, height - h_offset * 2);
+            cropped = image(roi);
+
+            if (width > 320 && height > 320) {
+                cv::blur(cropped, cropped, cv::Size(kernel * 16, kernel * 16));
+            } else if (width > 160 && height > 160) {
+                cv::blur(cropped, cropped, cv::Size(kernel * 8, kernel * 8));
+            } else {
+                cv::blur(cropped, cropped, cv::Size(kernel, kernel));
+            }
+        }
+    }
+}
+}
+

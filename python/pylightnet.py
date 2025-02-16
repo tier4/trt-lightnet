@@ -17,7 +17,7 @@ import numpy as np
 import ctypes
 import csv
 import json
-
+import re
 __all__ = ["pylightnet"]
 
 # Define the C-compatible ModelConfigC structure
@@ -113,6 +113,8 @@ def load_colormap_from_file(filename):
     with open(filename, "r") as f:
         colormap = []
         for line in f:
+            if line == "\n" :
+                continue
             values = [int(v) for v in line.strip().split(",")]
             if len(values) == 3:
                 colormap.extend(values)
@@ -140,7 +142,7 @@ def load_segmentation_data(csv_file_path):
 
 # Wrapper for TrtLightnet
 class TrtLightnet:
-    def __init__(self, model_config, inference_config, build_config):
+    def __init__(self, model_config, inference_config, build_config, subnet_model_config=None, subnet_inference_config=None):
         # Load the shared library
         self.lib = ctypes.CDLL('liblightnetinfer.so')
 
@@ -170,15 +172,47 @@ class TrtLightnet:
         ]
         self.lib.infer_lightnet_wrapper.restype = None
 
+        self.lib.infer_multi_stage_lightnet_wrapper.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,            
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+        ]
+        self.lib.infer_multi_stage_lightnet_wrapper.restype = None        
+
+        self.lib.blur_image.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,            
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        self.lib.blur_image.restype = None
+        
         self.lib.get_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
         self.lib.get_bbox_array.restype = ctypes.POINTER(BBoxInfoC)
 
+        self.lib.get_subnet_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+        self.lib.get_subnet_bbox_array.restype = ctypes.POINTER(BBoxInfoC)        
+                
         # Create the C++ TrtLightnet instance
         self.instance = self.lib.create_trt_lightnet(
             ctypes.byref(model_config),
             ctypes.byref(inference_config),
             ctypes.byref(build_config),
         )
+
+        if subnet_model_config != None :
+            self.sub_instance = self.lib.create_trt_lightnet(
+                ctypes.byref(subnet_model_config),
+                ctypes.byref(subnet_inference_config),
+                ctypes.byref(build_config),
+            )
+        
         if not self.instance:
             raise RuntimeError("Failed to create TrtLightnet instance")
 
@@ -231,6 +265,21 @@ class TrtLightnet:
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, cuda)
 
+    def infer_multi_stage(self, image, target_list, cuda=False):
+        if image.dtype != np.uint8:
+            raise ValueError("Image must be of type np.uint8")
+        height, width, _ = image.shape
+        img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+        c_array = (ctypes.c_char_p * len(target_list))(*[s.encode('utf-8') for s in target_list])
+        self.lib.infer_multi_stage_lightnet_wrapper(self.instance, self.sub_instance, img_data, width, height, cuda, c_array, len(target_list))        
+
+    def blur_image(self, image):
+        if image.dtype != np.uint8:
+            raise ValueError("Image must be of type np.uint8")
+        height, width, _ = image.shape
+        img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+        self.lib.blur_image(self.instance, self.sub_instance, img_data, width, height)
+        
     def get_bboxes(self):
         size = ctypes.c_int()
         bbox_array = self.lib.get_bbox_array(self.instance, ctypes.byref(size))
@@ -244,6 +293,20 @@ class TrtLightnet:
                 "prob": bbox.prob,
             })
         return bboxes
+
+    def get_subnet_bboxes(self):
+        size = ctypes.c_int()
+        bbox_array = self.lib.get_subnet_bbox_array(self.instance, ctypes.byref(size))
+        bboxes = []
+        for i in range(size.value):
+            bbox = bbox_array[i]
+            bboxes.append({
+                "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
+                "label": bbox.label,
+                "classId": bbox.classId,
+                "prob": bbox.prob,
+            })
+        return bboxes    
 
     def make_mask(self, argmax2bgr_ptr):
         """
@@ -339,13 +402,16 @@ class TrtLightnet:
         return image_annotations
 
 # Function to draw bounding boxes
-def draw_bboxes_on_image(image, bboxes, colormap, names):
+def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
     for bbox in bboxes:
         x1, y1, x2, y2 = bbox["box"]
         label = bbox["label"]
         class_name = names[label] if label < len(names) else "Unknown"
         color = (colormap[label * 3 + 2], colormap[label * 3 + 1], colormap[label * 3 + 0])
-        cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+        if filled == True :
+            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
+        else :
+            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
         cv2.putText(image, f"{class_name} ({bbox['prob']:.2f})", (int(x1), int(y1) - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         if "attribute_prob" in bbox and bbox["attribute_prob"] > 0.1 :
@@ -375,6 +441,7 @@ def load_config(file_path):
                 elif value.lower() in ["true", "false"]:
                     value = value.lower() == "true"
                 elif "," in value:
+                    value = re.sub(r"\s+", "", value)
                     value = [int(v) if v.isdigit() else float(v) if v.replace('.', '', 1).isdigit() else v for v in value.split(",")]
 
             config_dict[key] = value
@@ -430,6 +497,7 @@ def parse_inference_config(config_dict):
     inference_config.scale = 1.0
     inference_config.calibration_images = config_dict["calibration_images"].encode("utf-8")
     inference_config.calibration_type = config_dict["calib"].encode("utf-8")
+        
     inference_config.max_batch_size = 1
     inference_config.min_batch_size = 1
     inference_config.optimal_batch_size = 1
@@ -471,5 +539,49 @@ def create_lightnet_from_config(config_dict):
     model_config = parse_model_config(config_dict)
     inference_config = parse_inference_config(config_dict)
     build_config = parse_build_config(config_dict)
-    return TrtLightnet(model_config, inference_config, build_config)
+    if "subnet_onnx" in config_dict :
+        #Parse subnet like TLR and anonymizer
+        subnet_model_config = parse_subnet_model_config(config_dict)
+        subnet_inference_config = parse_inference_config(config_dict)
+        if "batch_size" in config_dict :
+            batch_size = config_dict["batch_size"]
+            subnet_inference_config.max_batch_size = batch_size                
+            subnet_inference_config.optimal_batch_size = (int)(batch_size/2)
+            subnet_inference_config.min_batch_size = 1        
+        return TrtLightnet(model_config, inference_config, build_config, subnet_model_config, subnet_inference_config)
+    else :
+        return TrtLightnet(model_config, inference_config, build_config)    
 
+def parse_subnet_model_config(config_dict):
+    """Parse model configuration and store it in a ModelConfigC object."""
+    model_config = ModelConfigC()
+    model_config.model_path = config_dict["subnet_onnx"].encode("utf-8")
+    model_config.num_class = int(config_dict["subnet_c"])
+    model_config.score_threshold = float(config_dict["subnet_thresh"])
+    
+    # Convert anchors to a ctypes array\
+    '''
+    if not isinstance(config_dict["anchors"], list):
+        raise ValueError("anchors should be a list of integers")
+    '''
+    if "anchors" in config_dict :
+        model_config.anchors = (ctypes.c_int * 40)(*config_dict["subnet_anchors"])
+        model_config.anchor_elements = len(config_dict["subnet_anchors"])
+        model_config.num_anchors = int(config_dict["subnet_num_anchors"])
+
+    # Set NMS threshold (default: 0.45)
+    model_config.nms_threshold = float(config_dict.get("subnet_nms_thresh", 0.45))
+
+    # Convert class names to ctypes array
+    names = load_names_from_file(config_dict["subnet_names"])
+    c_names = (ctypes.c_char_p * len(names))(*[name.encode("utf-8") for name in names])
+    model_config.names = ctypes.cast(c_names, ctypes.POINTER(ctypes.c_char_p))
+    model_config.num_names = len(names)
+
+    # Convert colormap to ctypes array
+    detection_colormap = load_colormap_from_file(config_dict["subnet_rgb"])
+    c_detection_colormap = (ctypes.c_int * len(detection_colormap))(*detection_colormap)
+    model_config.detection_colormap = ctypes.cast(c_detection_colormap, ctypes.POINTER(ctypes.c_int))
+    model_config.detection_colormap_size = len(detection_colormap)
+
+    return model_config

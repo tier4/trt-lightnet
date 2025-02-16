@@ -24,14 +24,14 @@ import pylightnet
 
 def parse_args():
     """Parse command-line arguments for video path and config file."""
-    parser = argparse.ArgumentParser(description="Run inference on a video using PyLightNet.")
+    parser = argparse.ArgumentParser(description="Run multi-stage inference on a video using PyLightNet.")
     parser.add_argument("-v", "--video", help="Path to the video file", required=True, type=str)
     parser.add_argument("-f", "--flagfile", help="Path to the config file", required=True, type=str)
     return parser.parse_args()
 
 
 def demo(video_path, config_path):
-    """Perform inference on the given video using the provided config file.
+    """Perform multi-stage inference and optional blurring on the given video.
 
     Args:
         video_path (str): Path to the input video file.
@@ -40,6 +40,10 @@ def demo(video_path, config_path):
     config_dict = pylightnet.load_config(config_path)
     names = pylightnet.load_names_from_file(config_dict["names"])
     colormap = pylightnet.load_colormap_from_file(config_dict["rgb"])
+    subnet_names = pylightnet.load_names_from_file(config_dict["subnet_names"])
+    subnet_colormap = pylightnet.load_colormap_from_file(config_dict["subnet_rgb"])
+    target = pylightnet.load_names_from_file(config_dict["target_names"])
+
     lightnet = pylightnet.create_lightnet_from_config(config_dict)
 
     cap = cv2.VideoCapture(video_path)
@@ -54,15 +58,18 @@ def demo(video_path, config_path):
 
         height, width, _ = image.shape
 
-        # Run inference on the current frame
-        lightnet.infer(image, cuda=True)
+        # Perform multi-stage inference with target classes
+        lightnet.infer_multi_stage(image, target, cuda=True)
 
-        # Get and draw bounding boxes
+        # Apply blur to regions detected by the multi-stage network
+        lightnet.blur_image(image)
+
+        # Draw bounding boxes from main and subnet detections for debug
         bboxes = lightnet.get_bboxes()
         pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
 
-        # Resize for display
-        image = cv2.resize(image, (1920, 1280))
+        subnet_bboxes = lightnet.get_subnet_bboxes()
+        pylightnet.draw_bboxes_on_image(image, subnet_bboxes, subnet_colormap, subnet_names)
 
         cv2.imshow("Result", image)
 
