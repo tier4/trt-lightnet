@@ -1,0 +1,12 @@
+id,name,r,g,b,dynamic
+0,no_label,0,0,0,false
+1,road,128,64,128,false
+2,sidewalk,244,35,232,false
+3,parking_lot,233,25,32,false
+4,crosswalk,255,204,0,false
+5,striped_road_marking,150,255,150,false
+6,obstacle_others,128,196,128,false
+7,building,70,70,70,false
+8,wall_fence,102,102,156,false
+9,vegetation_terrain,107,142,35,false
+10,sky,70,130,180,false
