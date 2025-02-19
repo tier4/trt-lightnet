@@ -65,7 +65,6 @@ def demo(video_path, config_path):
         subnet_bboxes = lightnet.get_subnet_bboxes()
         pylightnet.draw_bboxes_on_image(image, subnet_bboxes, subnet_colormap, subnet_names)
 
-        print(bboxes)        
         # Resize for display
         image = cv2.resize(image, (1920, 1280))
 

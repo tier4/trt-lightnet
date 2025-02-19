@@ -303,7 +303,6 @@ class TrtLightnet:
         bboxes = []
         for i in range(size.value):
             bbox = bbox_array[i]
-            print(bbox)
             bboxes.append({
                 "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
                 "label": bbox.label,
