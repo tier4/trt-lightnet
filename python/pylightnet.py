@@ -291,6 +291,9 @@ class TrtLightnet:
                 "label": bbox.label,
                 "classId": bbox.classId,
                 "prob": bbox.prob,
+                "subClassId" : bbox.subClassId,
+                "sin" : bbox.sin,
+                "cos" : bbox.cos,
             })
         return bboxes
 
@@ -300,12 +303,17 @@ class TrtLightnet:
         bboxes = []
         for i in range(size.value):
             bbox = bbox_array[i]
+            print(bbox)
             bboxes.append({
                 "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
                 "label": bbox.label,
                 "classId": bbox.classId,
                 "prob": bbox.prob,
+                "subClassId" : bbox.subClassId,
+                "sin" : bbox.sin,
+                "cos" : bbox.cos,                
             })
+
         return bboxes    
 
     def make_mask(self, argmax2bgr_ptr):
@@ -569,8 +577,8 @@ def parse_subnet_model_config(config_dict):
         model_config.anchor_elements = len(config_dict["subnet_anchors"])
         model_config.num_anchors = int(config_dict["subnet_num_anchors"])
 
-    # Set NMS threshold (default: 0.45)
-    model_config.nms_threshold = float(config_dict.get("subnet_nms_thresh", 0.45))
+    # Set NMS threshold (default: 0.25)
+    model_config.nms_threshold = float(config_dict.get("subnet_nms_thresh", 0.25))
 
     # Convert class names to ctypes array
     names = load_names_from_file(config_dict["subnet_names"])
