@@ -139,7 +139,7 @@ def load_segmentation_data(csv_file_path):
                 "dynamic": row["dynamic"].lower() == "true"  # Convert string to boolean
             }
     return data_dict
-
+        
 # Wrapper for TrtLightnet
 class TrtLightnet:
     def __init__(self, model_config, inference_config, build_config, subnet_model_config=None, subnet_inference_config=None):
@@ -195,6 +195,9 @@ class TrtLightnet:
         
         self.lib.get_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
         self.lib.get_bbox_array.restype = ctypes.POINTER(BBoxInfoC)
+
+        self.lib.get_top_index.argtypes = [ctypes.c_void_p]
+        self.lib.get_top_index.restype = ctypes.c_int    
 
         self.lib.get_subnet_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
         self.lib.get_subnet_bbox_array.restype = ctypes.POINTER(BBoxInfoC)        
@@ -273,6 +276,23 @@ class TrtLightnet:
         c_array = (ctypes.c_char_p * len(target_list))(*[s.encode('utf-8') for s in target_list])
         self.lib.infer_multi_stage_lightnet_wrapper(self.instance, self.sub_instance, img_data, width, height, cuda, c_array, len(target_list))        
 
+    def classifer_from_bboxes(self, image, bboxes, names, target, sub_names, cuda=False) :
+        count = 0
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox["box"]
+            label = bbox["label"]
+            class_name = names[label] if label < len(names) else "Unknown"
+            if class_name != target :
+                continue
+            cropped = image[int(y1):int(y2), int(x1):int(x2)].copy()
+            height, width, _ = cropped.shape
+            img_data = cropped.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+            self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, False)
+            top_index = self.lib.get_top_index(self.instance)
+            print("Infer " , count, ":", sub_names[top_index],  bbox)
+            bbox["sub_name"] = sub_names[top_index]
+            count = count+1
+            
     def blur_image(self, image):
         if image.dtype != np.uint8:
             raise ValueError("Image must be of type np.uint8")
@@ -425,6 +445,8 @@ def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
             attr = bbox['attribute']
             attr_prob = bbox["attribute_prob"]
             cv2.putText(image, f"--> {attr} ({attr_prob:.2f})", (int(x1), int(y1) + 20), cv2.FONT_ITALIC, 0.5, color, 2)
+        if "sub_name" in bbox:
+            cv2.putText(image, f"--> {bbox['sub_name']}", (int(x1), int(y1) + 20), cv2.FONT_ITALIC, 0.5, color, 2)            
 
 
 

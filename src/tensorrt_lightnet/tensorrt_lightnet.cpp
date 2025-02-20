@@ -347,7 +347,7 @@ namespace tensorrt_lightnet
     nms_threshold_ = nms_threshold;
     anchors_ = anchors;
     num_anchor_ = num_anchor;
-
+    max_index_ = -1;
     // Allocate GPU memory for inputs and outputs based on tensor dimensions.
     allocateMemory();
 
@@ -358,7 +358,7 @@ namespace tensorrt_lightnet
     d_bevmap_ = NULL;
     d_depth_colormap_ = NULL;
     d_colorMap_ = NULL;
-    d_resized_mask_  = NULL;
+    d_resized_mask_  = NULL;   
     int chan_size = (4 + 1 + num_class_) * num_anchor_;    
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -2991,6 +2991,43 @@ namespace tensorrt_lightnet
     }
   }
   
+  void TrtLightnet::makeTopIndex(void)
+  {
+    keypoint_.clear(); // Clear the list of keypoints before processing new data.
+
+    // Calculate the expected channel size for non-bounding box related output tensors.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    int index = -1;
+    // Iterate over all output bindings to identify potential depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Check if the tensor is a depth map based on its dimensions and channel size.
+      if (chan_size != chan && outputW == 1 && outputH == 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Verify that the tensor name contains "lgx" and the data type is float.
+	if (contain(name, "softmax") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float *buf = (float *)output_h_.at(i - 1).get(); // Access the tensor data buffer.
+	  float max_value = 0.0;
+	  for (int c = 0; c < chan; c++) {
+	    if (max_value < buf[c]) {
+	      max_value = buf[c];
+	      index = c;
+	    }	    
+	  }
+	  max_index_ = index;
+	  std::cout << "(Classification) Max Index :" << max_index_ << "@" << max_value << std::endl;
+	}
+      }
+    }
+    return;
+  }
+  
   /**
    * Returns the list of keypoints detected by the engine.
    * 
@@ -2999,6 +3036,11 @@ namespace tensorrt_lightnet
   std::vector<KeypointInfo> TrtLightnet::getKeypoints(void)
   {
     return keypoint_;
+  }
+
+  int TrtLightnet::getMaxIndex(void)
+  {
+    return max_index_;
   }
   
   /**

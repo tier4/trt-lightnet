@@ -726,6 +726,10 @@ public:
    */
   std::vector<KeypointInfo> getKeypoints(void);
 
+  int getMaxIndex(void);
+  
+  void makeTopIndex(void);
+  
   /**
    * @brief Links a list of keypoints to a bounding box at the specified index.
    * 
@@ -1097,6 +1101,7 @@ public:
    */  
   std::vector<KeypointInfo> keypoint_;
 
+  int max_index_;
   /**
    * @brief Host-side pointer for storing image data during preprocessing.
    */

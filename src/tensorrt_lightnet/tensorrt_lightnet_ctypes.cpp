@@ -459,7 +459,6 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
 
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     cv::Mat image(height, width, CV_8UC3, img_data);
-
     // Preprocessing
     if (cuda) {
       lightnet->preprocess_gpu({image});
@@ -472,6 +471,7 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
 
     // Postprocessing
     lightnet->makeBbox(image.rows, image.cols);
+    lightnet->makeTopIndex();    
   }
 
   /**
@@ -517,6 +517,17 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     return bbox_c_array.data();
   }
 
+  int get_top_index(void* instance)
+  {
+    if (!instance) {
+      std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
+      return -1;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    int top_index = lightnet->getMaxIndex();
+    return top_index;
+  }
+  
   /**
    * @brief Convert an array of RGB values to a vector of cv::Vec3b.
    * 

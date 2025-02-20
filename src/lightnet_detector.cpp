@@ -237,6 +237,8 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
       }
       trt_lightnet->makeKeypoint(image.rows, image.cols);
 
+      trt_lightnet->makeTopIndex();
+      
       Calibration calibdata = {
 	.u0 = (float)(image.cols/2.0),
 	.v0 = (float)(image.rows/2.0),
