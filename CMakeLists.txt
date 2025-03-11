@@ -17,8 +17,14 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath -Wl,$ORIGIN")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
 
 # Include directories and library paths
-include_directories(/usr/local/cuda/include include)
-link_directories(/usr/local/cuda/lib64)
+if(DEFINED ENV{CUDA_HOME})
+    set(CUDA_HOME $ENV{CUDA_HOME})
+else()
+    set(CUDA_HOME /usr/local/cuda)
+endif()
+
+include_directories(${CUDA_HOME}/include include)
+link_directories(${CUDA_HOME}/lib64)
 
 # Find external libraries
 find_package(OpenCV REQUIRED)
@@ -52,12 +58,12 @@ target_link_libraries(lightnetinfer
   z
   dl
   ${OpenCV_LIBS}
-  "stdc++fs"  
+  "stdc++fs"
   )
 target_include_directories(lightnetinfer PRIVATE
   extra/
   ${OpenCV_INCLUDE_DIRS}
-  ${CUDA_TOOLKIT_ROOT_DIR}/include
+  ${CUDA_HOME}/include
   ${EIGEN3_INCLUDE_DIR}
   include/pcdUtils
   include/sensor
@@ -70,7 +76,7 @@ add_executable(trt-lightnet
   ${sources}
   )
 target_include_directories(trt-lightnet PRIVATE
-  ${EIGEN3_INCLUDE_DIR}  
+  ${EIGEN3_INCLUDE_DIR}
   include
   include/pcdUtils
   include/sensor
