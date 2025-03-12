@@ -73,7 +73,7 @@ $ sudo apt update
 $ sudo apt install libgflags-dev
 $ sudo apt install libboost-all-dev
 $ sudo apt install libopencv-dev
-$ sudo apt-get install libeigen3-dev
+$ sudo apt install libeigen3-dev
 $ sudo apt install nlohmann-json3-dev
 ```
 
