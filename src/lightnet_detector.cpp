@@ -28,6 +28,9 @@
 #include <cnpy.h>
 #include <pcd2image.hpp>
 #include <CalibratedSensorParser.h>
+#include <fswp/fswp.hpp>
+#include <omp.h>
+
 /**
  * Configuration for input and output paths used during inference.
  * This includes directories for images, videos, and where to save output.
@@ -42,6 +45,7 @@ struct PathConfig {
   bool flg_save; ///< Flag indicating whether to save inference output.
   std::string save_path; ///< Directory path where output should be saved.
   bool flg_save_debug_tensors;
+  std::string json_path;
 };
 
 /**
@@ -54,15 +58,45 @@ struct VisualizationConfig {
   std::vector<std::string> names; ///< Names of the classes for display.
   std::vector<cv::Vec3b> argmax2bgr; ///< Mapping from class indices to BGR colors for segmentation masks.
   std::vector<tensorrt_lightnet::Colormap> seg_colormap;
+  std::vector<int> road_ids;
 };
 
-template <typename ... Args>
-std::string format(const std::string& fmt, Args ... args )
-{
-  size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
-  std::vector<char> buf(len + 1);
-  std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
-  return std::string(&buf[0], &buf[0] + len);
+
+cv::Mat concatHorizontal(const cv::Mat& mat1, const cv::Mat& mat2) {
+  if (mat1.empty() || mat2.empty()) {
+    std::cerr << "Input matrices should not be empty!" << std::endl;
+    return cv::Mat();
+  }
+
+  cv::Mat resizedMat2;
+  double aspectRatio = static_cast<double>(mat2.cols) / mat2.rows;
+  int newWidth = static_cast<int>(aspectRatio * mat1.rows); 
+  cv::resize(mat2, resizedMat2, cv::Size(newWidth, mat1.rows));
+
+  cv::Mat concatenated;
+  cv::hconcat(mat1, resizedMat2, concatenated);
+
+  return concatenated;
+}
+
+cv::Mat concatHorizontalWithPadding(const cv::Mat& mat1, const cv::Mat& mat2) {
+  if (mat1.empty() || mat2.empty()) {
+    std::cerr << "Input matrices should not be empty!" << std::endl;
+    return cv::Mat();
+  }
+
+  int maxHeight = std::max(mat1.rows, mat2.rows);
+
+  cv::Mat paddedMat1 = cv::Mat::zeros(maxHeight, mat1.cols, mat1.type());
+  mat1.copyTo(paddedMat1(cv::Rect(0, (maxHeight - mat1.rows) / 2, mat1.cols, mat1.rows)));
+
+  cv::Mat paddedMat2 = cv::Mat::zeros(maxHeight, mat2.cols, mat2.type());
+  mat2.copyTo(paddedMat2(cv::Rect(0, (maxHeight - mat2.rows) / 2, mat2.cols, mat2.rows)));
+
+  cv::Mat concatenated;
+  cv::hconcat(paddedMat1, paddedMat2, concatenated);
+
+  return concatenated;
 }
 
 /**
@@ -116,6 +150,47 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
 }  
 
 /**
+ * Performs fast face swapping on the input image using TensorRT LightNet and FaceSwapper models.
+ *
+ * @param trt_lightnet A shared pointer to a `tensorrt_lightnet::TrtLightnet` object used for detecting bounding boxes.
+ * @param fswp_model A shared pointer to a `fswp::FaceSwapper` object used for swapping faces and inpainting the image.
+ * @param image A reference to the `cv::Mat` object containing the input image. This image is modified in-place with the swapped faces.
+ * @param names A vector of strings representing class names corresponding to the detected bounding boxes.
+ * @param target A vector of strings representing the target class names to swap faces for. Only bounding boxes with these class names are processed.
+ * @param numWorks The number of parallel workers (not used in the current implementation).
+ */
+void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::shared_ptr<fswp::FaceSwapper> fswp_model, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
+{
+  trt_lightnet->removeAspectRatioBoxes(names, target, 1/4.0);  
+  trt_lightnet->removeContainedBBoxes(names, target);
+  std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();
+  int num = (int)bbox.size();
+
+  std::vector<tensorrt_lightnet::BBoxInfo> fdet_bboxes;
+  for (int i = 0; i < num; i++) {
+      auto b = bbox[i];
+      if ((b.box.x2 - b.box.x1) < 32) {
+	continue;
+      }
+      if ((b.box.y2 - b.box.y1) < 32) {
+	continue;
+      }      
+      for (auto &t : target) {
+	if (t == names[b.classId]) {
+	  fdet_bboxes.push_back(b);
+	}
+      }
+  }
+  std::vector<fswp::BBox> fswp_bboxes(fdet_bboxes.size());
+  std::transform(fdet_bboxes.begin(), fdet_bboxes.end(), fswp_bboxes.begin(),
+		 [](const auto &boxinfo) {
+		   const auto &box = boxinfo.box;
+		   return fswp::BBox{box.x1, box.y1, box.x2, box.y2};
+		 });
+  fswp_model->inpaint(image, fswp_bboxes);  
+}
+
+/**
  * Performs inference on an image using a TensorRT LightNet model, processes the output to get bounding boxes
  * segmentation and depth. This function encapsulates the preprocessing, inference, and postprocessing steps.
  * 
@@ -125,42 +200,79 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
  * @param names The names of the classes corresponding to the detection outputs.
  * @param argmax2bgr A vector of BGR colors used for drawing segmentation masks.
  */
-void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<cv::Vec3b> &argmax2bgr)
+void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, VisualizationConfig visualization_config, std::shared_ptr<fswp::FaceSwapper> fswp_model, std::vector<std::string> &target)
 {
   //preprocess
-  trt_lightnet->preprocess({image});
+  if (get_cuda_flg()) {
+    trt_lightnet->preprocess_gpu({image});
+  } else {
+    trt_lightnet->preprocess({image});
+  }
   //inference
+
   trt_lightnet->doInference();
 
-  if (get_smooth_depthmap_using_semseg()) {
-    trt_lightnet->smoothDepthmapFromRoadSegmentation();
-  }
   //postprocess
+  trt_lightnet->makeBbox(image.rows, image.cols);
+
 #pragma omp parallel sections
   {
 #pragma omp section
-    {  
-      trt_lightnet->makeBbox(image.rows, image.cols);
-    }
-#pragma omp section
-    {  	
-      trt_lightnet->makeMask(argmax2bgr);
+    {
+      if (get_smooth_depthmap_using_semseg()) {
+	if (get_cuda_flg()) {
+	  trt_lightnet->smoothDepthmapFromRoadSegmentationGpu(visualization_config.road_ids);
+	} else {
+	  trt_lightnet->smoothDepthmapFromRoadSegmentation(visualization_config.road_ids);
+	}
+	
+      }
+      
+      trt_lightnet->makeMask(visualization_config.argmax2bgr);
+      if (get_cuda_flg()) {
+	trt_lightnet->makeDepthmapGpu();
+      } else {
+	std::string depth_format = get_depth_format();      
+	trt_lightnet->makeDepthmap(depth_format);
+      }
+      trt_lightnet->makeKeypoint(image.rows, image.cols);
+
+      trt_lightnet->makeTopIndex();
+      
+      Calibration calibdata = {
+	.u0 = (float)(image.cols/2.0),
+	.v0 = (float)(image.rows/2.0),
+	.fx = get_fx(),
+	.fy = get_fy(),
+	.max_distance = get_max_distance(),
+      };
+      if (get_cuda_flg()) {
+	if (get_sparse_depth_flg()) {
+	  trt_lightnet->makeBackProjectionGpuWithoutDensify(image.cols, image.rows, calibdata);
+	}
+	trt_lightnet->makeBackProjectionGpu(image.cols, image.rows, calibdata, 2);
+      } else {
+	trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);
+      }
     }
 #pragma omp section
     {
-      std::string depth_format = get_depth_format();      
-      trt_lightnet->makeDepthmap(depth_format);
-      trt_lightnet->makeKeypoint(image.rows, image.cols);
+      if (get_fswp_onnx_path() != "not-specified") {
+	std::chrono::high_resolution_clock::time_point start, end;
+	if (profile_verbose()) {
+	  start = std::chrono::high_resolution_clock::now();
+	}
+	
+	inferFastFaceSwapper(trt_lightnet, fswp_model, image, visualization_config.names, target, 1);
+	if (profile_verbose()) {      
+	  end = std::chrono::high_resolution_clock::now();
+	  std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	  std::cout << "##inferFastFaceSwapper: " << duration.count() << " ms " << std::endl;
+	}        
+      }
     }
   }
-  Calibration calibdata = {
-    .u0 = (float)(image.cols/2.0),
-    .v0 = (float)(image.rows/2.0),
-    .fx = get_fx(),
-    .fy = get_fy(),
-    .max_distance = get_max_distance(),
-  };
-  trt_lightnet->makeBackProjection(image.cols, image.rows, calibdata);  
+  
 }
 
 /**
@@ -216,6 +328,7 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
 
   trt_lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
+
 
 /**
  * @brief Performs keypoint inference using multiple subnetworks on a given image.
@@ -319,18 +432,24 @@ void inferKeypointLightnets(
  * @param colormap A vector of vectors containing RGB values for coloring each class.
  * @param names A vector of class names used for labeling the detections.
  */
-void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names)
+void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names, std::vector<std::string> &target)
 {
   std::vector<tensorrt_lightnet::BBoxInfo> bbox = trt_lightnet->getBbox();  
   std::vector<cv::Mat> masks = trt_lightnet->getMask();
   std::vector<cv::Mat> depthmaps = trt_lightnet->getDepthmap();
   std::vector<tensorrt_lightnet::KeypointInfo> keypoint = trt_lightnet->getKeypoints();
+
   for (const auto &mask : masks) {
-    cv::Mat resized;
-    cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
-    cv::addWeighted(image, 1.0, resized, 0.45, 0.0, image);
+    if (get_cuda_flg()) {
+      trt_lightnet->blendSegmentationGpu(image, 1.0, get_blending(), 0.0);
+    } else {
+      cv::Mat resized;
+      cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+      cv::addWeighted(image, 1.0, resized, get_blending(), 0.0, image);
+    }
     cv::imshow("mask", mask);
   }
+
   for (const auto &depth : depthmaps) {
     cv::imshow("depth", depth);
   }
@@ -350,13 +469,33 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
       cv::imshow("inconsistency", inconsitency_map);
     }    
   }
-  
+
+  if (target.size() > 0 ) {
+    if (get_plot_circle_flg()) {
+      Calibration calibdata = {
+	.u0 = (float)(image.cols/2.0),
+	.v0 = (float)(image.rows/2.0),
+	.fx = get_fx(),
+	.fy = get_fy(),
+	.max_distance = get_max_distance(),
+      };
+      trt_lightnet->plotCircleIntoBevmap(image.cols, image.rows, calibdata, names, target);
+    }
+  }  
+
+  if (keypoint.size() > 0) {
+    trt_lightnet->drawKeypoint(image, keypoint);
+  }
+    
   if (masks.size() > 0 && depthmaps.size() > 0) {
     cv::Mat bevmap = trt_lightnet->getBevMap();
     cv::imshow("bevmap", bevmap);
-  }
-  if (keypoint.size() > 0) {
-    trt_lightnet->drawKeypoint(image, keypoint);
+    if (get_cuda_flg()) {
+      if (get_sparse_depth_flg()) {
+	cv::Mat sparsemap = trt_lightnet->getSparseBevMap();
+	cv::imshow("sparse-bevmap", sparsemap);
+      }
+    }
   }
 }
 
@@ -555,6 +694,25 @@ void writeCrossTaskInconsistency(std::shared_ptr<tensorrt_lightnet::TrtLightnet>
   }
 }
 
+
+void write_annotation_json(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<tensorrt_lightnet::Colormap> colormap, std::vector<std::string> &names, std::string json_path, std::string filename)
+{
+  fs::path p = fs::path(json_path) / "json";
+  std::string json_name = filename;
+  fs::create_directories(fs::path(json_path));
+  fs::create_directories(p);  
+  if (json_name.find(".jpg") != std::string::npos) {
+    replaceOtherStr(json_name, ".jpg", ".json");
+  }
+  if (json_name.find(".png") != std::string::npos) {
+    replaceOtherStr(json_name, ".png", ".json");
+  }  
+  if (json_name.find(".pcd.bin") != std::string::npos) {  
+    replaceOtherStr(json_name, ".pcd.bin", ".json");
+  }  
+  trt_lightnet->writeSegmentationAnnotation(p / json_name, filename, image.cols, image.rows, colormap);
+}
+
 /**
  * Processes and saves various outputs (detection images, prediction results, segmentation masks, depth maps) using
  * data from a TrtLightnet object.
@@ -656,10 +814,24 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
     }
   }
   if (masks.size() && depthmaps.size()) {
+    /*
     fs::path p = fs::path(save_path) / "bevmap";
     fs::create_directory(p);
     cv::Mat bevmap = trt_lightnet->getBevMap();
     saveImage(bevmap, p.string(), png_name);
+    p = fs::path(save_path) / "occupancyGrid";
+    fs::create_directory(p);
+    cv::Mat occupancy = trt_lightnet->getOccupancyGrid();
+    saveImage(occupancy, p.string(), png_name);
+    if (get_cuda_flg()) {
+      if (get_sparse_depth_flg()) {
+	cv::Mat sparsemap = trt_lightnet->getSparseBevMap();
+	p = fs::path(save_path) / "sparse_bevmap";
+	fs::create_directory(p);
+	saveImage(sparsemap, p.string(), png_name);	
+      }
+    }
+    */
   }  
 }
 
@@ -779,6 +951,7 @@ void inferLightNetPipeline(
 			   std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &subnet_trt_lightnets,
 			   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> &keypoint_trt_lightnets,
+			   std::shared_ptr<fswp::FaceSwapper> fswp_model,
 			   cv::Mat &image,
 			   VisualizationConfig visualization_config,
 			   VisualizationConfig subnet_visualization_config,
@@ -791,21 +964,46 @@ void inferLightNetPipeline(
 			   std::string cam_name
 			   ) {
   int numWorks = get_workers();
-
+  std::chrono::high_resolution_clock::time_point start, end;
+  if (profile_verbose()) {
+    start = std::chrono::high_resolution_clock::now();
+  }  
   // Perform inference with the main LightNet model
-  inferLightnet(trt_lightnet, image, visualization_config.argmax2bgr);
+  inferLightnet(trt_lightnet, image, visualization_config, fswp_model, target);
+  if (profile_verbose()) {      
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "##inferLightnet: " << duration.count() << " ms " << std::endl;
+  }
 
+  
   // Check and process subnet LightNets if applicable
   if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }      
     inferSubnetLightnets(trt_lightnet, subnet_trt_lightnets, image, visualization_config.names, target, numWorks);
     if (!bluron.empty()) {
       blurObjectFromSubnetBbox(trt_lightnet, image);
     }
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "##inferSubnetLightnets: " << duration.count() << " ms " << std::endl;
+    }    
   }
 
   // Check and process keypoint LightNets if applicable
   if (get_keypoint_onnx_path() != "not-specified" && !keypoint_trt_lightnets.empty()) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }      
     inferKeypointLightnets(trt_lightnet, keypoint_trt_lightnets, image, visualization_config.names, keypoint_target, numWorks);
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "##inferKeypointLightnets: " << duration.count() << " ms " << std::endl;
+    }        
   }
 
   // Calculate entropy and save results if required
@@ -837,13 +1035,22 @@ void inferLightNetPipeline(
       writeCrossTaskInconsistency(trt_lightnet, dstPath.string(), filename);
     }
   }
-
+ 
   // Draw visualizations if not suppressed
-  if (!visualization_config.dont_show) {
-    drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names);
+  if (1) {
+    //if (!visualization_config.dont_show) {
+    if (profile_verbose()) {
+      start = std::chrono::high_resolution_clock::now();
+    }          
+    drawLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, target);
     if (get_subnet_onnx_path() != "not-specified" && !subnet_trt_lightnets.empty()) {
       drawSubnetLightNet(trt_lightnet, image, subnet_visualization_config.colormap, subnet_visualization_config.names);
     }
+    if (profile_verbose()) {      
+      end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "#Visualization: " << duration.count() << " ms " << std::endl;
+    }          
   }
 
   // Save results if the save flag is enabled
@@ -858,6 +1065,10 @@ void inferLightNetPipeline(
     saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, dstPath.string(), filename);
   }
 
+  if (path_config.json_path != "") {
+    write_annotation_json(trt_lightnet, image, visualization_config.seg_colormap, visualization_config.names, path_config.json_path, filename);
+  }
+  
   // Save debug tensors if the debug save flag is enabled
   if (path_config.flg_save_debug_tensors && !path_config.save_path.empty()) {
     fs::path debugPath = fs::path(path_config.save_path) / "debug_tensors";
@@ -906,7 +1117,10 @@ CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, s
 	calibratedSensor.width = 2880;
 	calibratedSensor.height = 1860;
       }
-
+      if (get_width() && get_height()) {
+	calibratedSensor.width = get_width();
+	calibratedSensor.height = get_height();
+      }
       // If the current sensor matches the target camera name, store its information
       if (calibratedSensor.name == camera_name) {
 	targetCalibratedInfo = calibratedSensor;
@@ -958,7 +1172,8 @@ main(int argc, char* argv[])
     .output_path = get_output_path(),
     .flg_save = getSaveDetections(),
     .save_path = getSaveDetectionsPath(),
-    .flg_save_debug_tensors = get_save_debug_tensors()
+    .flg_save_debug_tensors = get_save_debug_tensors(),
+    .json_path = get_json_path()
   };
 
   std::vector<tensorrt_lightnet::Colormap> seg_colormap = get_seg_colormap();  
@@ -967,7 +1182,8 @@ main(int argc, char* argv[])
     .colormap = get_colormap(),
     .names = get_names(),
     .argmax2bgr = getArgmaxToBgr(get_seg_colormap()),
-    .seg_colormap = get_seg_colormap()
+    .seg_colormap = get_seg_colormap(),
+    .road_ids = get_road_ids()
   };
   
   
@@ -985,10 +1201,12 @@ main(int argc, char* argv[])
 					    );
 
   auto trt_lightnet =
-    std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config);
+    std::make_shared<tensorrt_lightnet::TrtLightnet>(model_config, inference_config, build_config, get_depth_format());
   //Subnet configuration
   std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets;
-  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;  
+  std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> keypoint_trt_lightnets;
+  std::shared_ptr<fswp::FaceSwapper> fswp_model;
+  
   VisualizationConfig subnet_visualization_config;
   std::vector<std::string> target, keypoint_target;
   std::vector<std::string> bluron = get_bluron_names();
@@ -1016,7 +1234,7 @@ main(int argc, char* argv[])
 	build_config.dla_core_id = (int)w/2;
       }
       subnet_trt_lightnets.push_back(
-				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config));
+				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config, get_depth_format()));
     }
   }
 
@@ -1036,10 +1254,16 @@ main(int argc, char* argv[])
 	build_config.dla_core_id = (int)w/2;
       }
       keypoint_trt_lightnets.push_back(
-				     std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config));
+				       std::make_shared<tensorrt_lightnet::TrtLightnet>(keypoint_model_config, inference_config, build_config, get_depth_format()));
     }
   }  
-  
+
+  if (get_fswp_onnx_path() != "not-specified") {
+    int bs = 8;
+    std::filesystem::path fswp_path(get_fswp_onnx_path());
+    fswp_model = std::make_shared<fswp::FaceSwapper>(fswp_path, build_config, bs, "fp16");
+    target = get_target_names();
+  }
   auto p2i = pcd2image::Pcd2image();
   CalibratedSensorInfo targetCalibratedInfo;
   if (get_lidar_range_image_flg()) {
@@ -1051,6 +1275,8 @@ main(int argc, char* argv[])
     }
     targetCalibratedInfo = getTargetCalibratedInfo(caliibrationInfoPath, get_camera_name());
   }
+  std::chrono::high_resolution_clock::time_point start, end;
+  
   if (!path_config.t4dataset_directory.empty()) {
     std::cout << path_config.t4dataset_directory << std::endl;
     fs::path t4_dataset(path_config.t4dataset_directory);
@@ -1074,7 +1300,7 @@ main(int argc, char* argv[])
 	  } else {
 	    image = cv::imread(file.path(), cv::IMREAD_COLOR);
 	  }
-	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
+	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
 	  
 	  if (!visualization_config.dont_show) {
 	    if (image.rows > 1280 && image.cols > 1920) {
@@ -1089,15 +1315,23 @@ main(int argc, char* argv[])
     } 
   } else if (!path_config.directory.empty()) {
     for (const auto& file : fs::directory_iterator(path_config.directory)) {
+      if (profile_verbose()) {
+	start = std::chrono::high_resolution_clock::now();
+      }      
       std::cout << "Inference from " << file.path() << std::endl;
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
-      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
 	}
 	cv::imshow("inference", image);	
 	cv::waitKey(0);
+      }
+      if (profile_verbose()) {      
+	end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	std::cout << "#Duration: " << duration.count() << " ms " << " FPS: " << 1000/duration.count()  << std::endl;
       }      
     }
   } else if (!path_config.video_path.empty() || path_config.camera_id != -1) {
@@ -1109,12 +1343,15 @@ main(int argc, char* argv[])
     }
     while (1) {
       cv::Mat image;
+      if (profile_verbose()) {
+	start = std::chrono::high_resolution_clock::now();
+      }
       video >> image;
-      if (image.empty()) break;
+      if (image.empty()) break;     
       std::ostringstream sout;
       sout << std::setfill('0') << std::setw(6) << count;	  
       std::string name = "frame_" + sout.str() + ".jpg";	              
-      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets,image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
+      inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
       
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
@@ -1125,7 +1362,12 @@ main(int argc, char* argv[])
 	  break;
 	}
       }
-      count++;      
+      count++;
+      if (profile_verbose()) {      
+	end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	std::cout << "#Duration: " << duration.count() << " ms " << " FPS: " << 1000/duration.count()  << std::endl;
+      }
     }
   }  
   

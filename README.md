@@ -84,6 +84,7 @@ $ sudo apt install nlohmann-json3-dev
 $ mkdir build && cd build
 $ cmake ../
 $ make -j
+$ sudo make install
 ```
 
 ### Steps for Docker Installation

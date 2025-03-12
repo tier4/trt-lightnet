@@ -25,7 +25,41 @@
 #include <string>
 #include <vector>
 #include <NvInfer.h>
+#include <cstring>
+#include <iostream>
+/**
+ * Checks if a given value is contained within a string. This template function is versatile,
+ * allowing for different types of values to be checked against the string, assuming the value
+ * can be sensibly searched within a string context.
+ *
+ * @tparam T The type of the value to be checked. Must be compatible with std::string's find method.
+ * @param s The string to search within.
+ * @param v The value to search for within the string. This value is converted to a suitable format
+ *          for comparison with the contents of the string.
+ * @return true if the value is found within the string, false otherwise.
+ */
+template<class T> bool contain(const std::string& s, const T& v) {
+  return s.find(v) != std::string::npos;
+}
 
+template <typename ... Args>
+static std::string format(const std::string& fmt, Args ... args )
+{
+  size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
+  std::vector<char> buf(len + 1);
+  std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
+  return std::string(&buf[0], &buf[0] + len);
+}
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  
+struct ucharRGB {
+  unsigned char r, g, b;
+};
 
 enum TLR_Color {
   TLR_GREEN = 0,
@@ -66,10 +100,14 @@ struct Calibration {
   float max_distance;
 };
 
-#define GRID_H 1280
-#define GRID_W 640
 //#define GRID_H 640
-//#define GRID_W 320
+//#define GRID_W 480
+
+//#define GRID_H 640
+//#define GRID_W 640
+
+#define GRID_H 1280
+#define GRID_W 960
 
 /**
  * Configuration settings related to the model being used for inference.
@@ -81,7 +119,8 @@ struct ModelConfig {
   float score_threshold; ///< Threshold for classification scores to consider a detection valid.
   std::vector<int> anchors; ///< Anchor sizes for the model.
   int num_anchors; ///< Number of anchors.
-  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).  
+  float nms_threshold; ///< Threshold for Non-Maximum Suppression (NMS).
+  std::vector<std::string> names;
 };
 
 /**
@@ -103,21 +142,14 @@ struct InferenceConfig {
   size_t workspace_size; ///< Maximum workspace size for TensorRT.
 };
 
-/**
- * Checks if a given value is contained within a string. This template function is versatile,
- * allowing for different types of values to be checked against the string, assuming the value
- * can be sensibly searched within a string context.
- *
- * @tparam T The type of the value to be checked. Must be compatible with std::string's find method.
- * @param s The string to search within.
- * @param v The value to search for within the string. This value is converted to a suitable format
- *          for comparison with the contents of the string.
- * @return true if the value is found within the string, false otherwise.
- */
-template<class T> bool contain(const std::string& s, const T& v) {
-  return s.find(v) != std::string::npos;
-}
 
+extern void getBackProjectionGpu(const float* d_depth, int outputW, int outputH, float scale_w, float scale_h, const Calibration calibdata,
+				 int mask_w, int mask_h, const unsigned char *d_mask, int mask_step, unsigned char *d_bevMap, int bevmap_step, int padding, cudaStream_t stream);
+
+extern void mapArgmaxtoColorGpu(unsigned char *output, int *input, 
+				int width, int height, const ucharRGB *colorMap, cudaStream_t stream);
+
+  
 namespace tensorrt_lightnet
 {
   /**
@@ -195,15 +227,6 @@ namespace tensorrt_lightnet
     float cos;                      ///< Cosine of an angle, if applicable to the object.
     std::vector<KeypointInfo> keypoint; ///< List of associated keypoints for the detected object.
   };
-
-  template <typename ... Args>
-  static std::string format(const std::string& fmt, Args ... args )
-  {
-    size_t len = std::snprintf( nullptr, 0, fmt.c_str(), args ... );
-    std::vector<char> buf(len + 1);
-    std::snprintf(&buf[0], len + 1, fmt.c_str(), args ... );
-    return std::string(&buf[0], &buf[0] + len);
-  }
   
   inline std::string getTLRStringFromBBox(BBoxInfo bbi, std::vector<std::string> &names)
   {
@@ -264,7 +287,7 @@ public:
    * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
    * TensorRT engine initialization fails.
    */  
-  TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config);
+  TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format);
 
   /**
    * Initializes the INT8 calibrator based on the specified calibration type.
@@ -307,6 +330,18 @@ public:
    */
   bool infer(void);
 
+  /**
+   * Performs inference on the current data.
+   * @return true if inference was successful, false otherwise.
+   */
+  bool doInference(const int batchSize);
+
+  /**
+   * Alias for doInference, performs inference on the current data.
+   * @return true if inference was successful, false otherwise.
+   */
+  bool infer(const int batchSize);  
+  
   /**
    * Draws bounding boxes on an image.
    * @param img the image on which to draw bounding boxes.
@@ -416,6 +451,16 @@ public:
   void preprocess(const std::vector<cv::Mat> & images);
 
   /**
+   * @brief Preprocesses input images on the GPU for inference.
+   *
+   * This function prepares the input image data to be compatible with the model's input dimensions.
+   * It supports only a single batch of images and resizes the input to match the model's required dimensions.
+   *
+   * @param images A vector of input images (cv::Mat) to preprocess.
+   */
+  void preprocess_gpu(const std::vector<cv::Mat> &images);
+  
+  /**
    * Retrieves bounding boxes for a given image size.
    * @param imageH height of the image.
    * @param imageW width of the image.
@@ -429,6 +474,16 @@ public:
    */
   std::vector<BBoxInfo> getBbox();  
 
+
+  std::vector<BBoxInfo> getBbox(const int imageH, const int imageW, const int batchIndex);
+
+  std::vector<std::string> getNames();
+
+  int getBatchSize();
+  
+  void setNames(std::vector<std::string> names);
+  std::vector<std::vector<int>> getDetectionColormap(void);
+  void setDetectionColormap(std::vector<std::vector<int>> &colormap);
   /**
    * Generates depth maps from the network's output tensors that are not related to bounding box detections.
    * @param depth_format depthmap format like "magma" and "grayscale".
@@ -436,6 +491,14 @@ public:
    */
   void makeDepthmap(std::string &depth_format);
 
+  /**
+   * @brief Generates depth maps using GPU-based processing.
+   *
+   * This function iterates through tensor bindings to locate depth map tensors,
+   * processes them using a GPU, and stores the resulting depth maps in a vector.
+   */  
+  void makeDepthmapGpu(void);
+  
   /**
    * @brief Generates a bird's-eye view map (BEV map) by back-projecting a depth map onto a 2D grid.
    *
@@ -450,8 +513,113 @@ public:
    */  
   void makeBackProjection(const int im_w, const int im_h, const Calibration calibdata);
 
+  /**
+   * @brief Creates a bird's-eye view (BEV) map from depth maps using GPU-based back projection.
+   *
+   * This function processes depth map tensors and applies GPU-based back projection
+   * to generate a BEV map using calibration data and masks.
+   *
+   * @param im_w Image width of the original input.
+   * @param im_h Image height of the original input.
+   * @param calibdata Calibration data required for back projection.
+   */  
+  void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding);
+
+  /**
+   * @brief Performs a GPU-based back projection without densifying the BEV map.
+   *
+   * This function processes a depth map tensor to create a sparse BEV (Bird's Eye View) map
+   * using GPU-based back projection. The output map is visualized as `sparsemap_`.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata Calibration data containing camera parameters and configurations.
+   */  
+  void makeBackProjectionGpuWithoutDensify(const int im_w, const int im_h, const Calibration calibdata);
+
+  /**
+   * @brief Creates a height map from the depth map data using 3D geometry transformations.
+   *
+   * This function generates a height map by converting depth data from a tensor to a color-coded
+   * visualization, where the height values are represented in a jet colormap.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata The calibration data containing intrinsic camera parameters and max distance.
+   * @return cv::Mat The generated height map as a color-coded image.
+   */
+  cv::Mat makeHeightmap(const int im_w, const int im_h, const Calibration calibdata);
+
+  /**
+   * @brief Blends segmentation masks with an input image using GPU acceleration.
+   *
+   * This function applies segmentation masks to an input image using GPU-based 
+   * processing. It supports resizing masks and blending them with the image using 
+   * specified weights for alpha, beta, and gamma.
+   *
+   * @param image Input/output image to which the segmentation masks are applied.
+   * @param alpha Weight of the original image in the blending process.
+   * @param beta Weight of the segmentation mask in the blending process.
+   * @param gamma Scalar added to each sum during blending.
+   */  
+  void blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma);
+  
+  /**
+   * Retrieves the generated BEV map.
+   * 
+   * @return BEV map.
+   */      
   cv::Mat getBevMap(void);
 
+  /**
+   * Retrieves the generated sparse BEV map.
+   * 
+   * @return sparse bev map.
+   */        
+  cv::Mat getSparseBevMap(void);
+
+  /**
+   * @brief Processes a BEV (Bird's Eye View) map to identify and visualize free space.
+   *
+   * This function processes a BEV map (`bevmap_`) to create a free space map (`freespace_`) by:
+   * - Converting specific pixel values in the BEV map to a binary image.
+   * - Smoothing the binary image and detecting contours.
+   * - Identifying the largest contour and visualizing it along with other contours.
+   * - Displaying the resulting free space and binary image.
+   *
+   * @param road_ids A vector of road IDs (currently not used within the function).
+   */  
+  void makeFreespace(std::vector<int> road_ids);
+  
+  /**
+   * @brief Generates and returns the occupancy grid for the BEV (Bird's Eye View) map.
+   * 
+   * The occupancy grid is used to represent road, obstacles, and other entities
+   * in a bird's eye view format. This function initializes and updates the 
+   * occupancy grid based on the provided BEV map and bounding box information.
+   *
+   * @return cv::Mat The occupancy grid as a CV Mat object.
+   */  
+  cv::Mat getOccupancyGrid(void);
+
+  /**
+   * @brief Creates the occupancy grid based on road and obstacle data.
+   *
+   * This function processes the BEV map (`bevmap_`) and bounding box data (`bbox_`) to:
+   * - Identify and mark road areas in the occupancy grid.
+   * - Map bounding boxes to 3D coordinates and project them onto the BEV map.
+   * - Render obstacles and roads in distinct colors based on a provided colormap.
+   * 
+   * @param road_ids A vector of road IDs (currently unused in the function).
+   * @param im_w Image width of the input data.
+   * @param im_h Image height of the input data.
+   * @param calibdata Camera calibration data used for coordinate transformations.
+   * @param colormap A 2D vector specifying the color for each class of objects.
+   * @param names A list of class names corresponding to the object classes.
+   * @param target A list of target class names to process.
+   */  
+  void makeOccupancyGrid(std::vector<int> road_ids, const int im_w, const int im_h, const Calibration calibdata, std::vector<std::vector<int>> &colormap, std::vector<std::string> names, std::vector<std::string> &target);  
+  
   /**
    * @brief Smoothes the depth map using road segmentation information.
    *
@@ -459,8 +627,18 @@ public:
    * by averaging distances over regions identified as roads or similar surfaces 
    * in the segmentation map. The smoothed depth values are then applied back to the depth map.
    */
-  void smoothDepthmapFromRoadSegmentation(void);
+  void smoothDepthmapFromRoadSegmentation(std::vector<int> road_ids);
 
+  /**
+   * @brief Smooths a depth map using road segmentation on the GPU.
+   *
+   * This function identifies relevant tensors for depth maps and segmentation,
+   * then applies GPU-based smoothing of the depth map using road segmentation labels.
+   *
+   * @param road_ids A vector of road segmentation label IDs to identify road regions.
+   */  
+  void smoothDepthmapFromRoadSegmentationGpu(std::vector<int> road_ids);
+  
   /**
    * @brief Calculates the median distance from a region in a buffer.
    *
@@ -476,6 +654,20 @@ public:
    */  
   float get_meadian_dist(const float *buf, int outputW, float scale_w, float scale_h, const BBox b);
 
+  /**
+   * @brief Plots circles representing detected objects onto the BEV map.
+   *
+   * This function uses bounding box data and calibration parameters to determine
+   * the 3D positions of objects and plots corresponding circles on the BEV map.
+   *
+   * @param im_w Width of the original input image.
+   * @param im_h Height of the original input image.
+   * @param calibdata Calibration data required for mapping coordinates.
+   * @param names Vector of class names for detected objects.
+   * @param target Vector of target object classes to exclude from plotting.
+   */
+  void plotCircleIntoBevmap(const int im_w, const int im_h, const Calibration calibdata, std::vector<std::string> &names, std::vector<std::string> &target);
+  
   /**
    * @brief Adds bounding boxes into a bird's-eye view (BEV) map.
    *
@@ -534,6 +726,10 @@ public:
    */
   std::vector<KeypointInfo> getKeypoints(void);
 
+  int getMaxIndex(void);
+  
+  void makeTopIndex(void);
+  
   /**
    * @brief Links a list of keypoints to a bounding box at the specified index.
    * 
@@ -686,9 +882,90 @@ public:
   void printProfiling(void);
 
   /**
-   * Unique pointer to a TensorRT common utility class, encapsulating common TensorRT operations.
+   * Checks if one bounding box is completely contained within another bounding box.
+   *
+   * @param bbox1 The bounding box to check for containment.
+   * @param bbox2 The bounding box that may contain bbox1.
+   * @return True if bbox1 is contained within bbox2, false otherwise.
+   */  
+  bool isContained(const BBox& bbox1, const BBox& bbox2);
+
+  /**
+   * Computes the area of a single bounding box.
+   *
+   * @param bbox The bounding box for which the area is to be calculated.
+   * @return The area of the bounding box. Returns 0 if the dimensions are invalid.
+   */  
+  float calculateBBoxArea(const BBox& bbox);
+
+  /**
+   * Computes the overlapping area between two bounding boxes.
+   *
+   * @param bbox1 The first bounding box.
+   * @param bbox2 The second bounding box.
+   * @return The area of the overlapping region between the two bounding boxes. Returns 0 if there is no overlap.
+   */  
+  float calculateOverlapArea(const BBox& bbox1, const BBox& bbox2);
+
+  /**
+   * Computes the aspect ratio of a bounding box.
+   *
+   * @param bbox The bounding box for which the aspect ratio is to be calculated.
+   * @return The aspect ratio (width / height). Returns 0 if the height is zero.
+   */    
+  float calculateAspectRatio(const BBox& bbox);  
+
+  /**
+   * Removes bounding boxes that are contained within others.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on containment.
    */
-  std::unique_ptr<tensorrt_common::TrtCommon> trt_common_;
+  void removeContainedBBoxes(std::vector<std::string> &names, std::vector<std::string> &target);
+
+  /**
+   * Removes bounding boxes whose aspect ratio exceeds a specified threshold.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on aspect ratio.
+   * @param targetAspectRatio The maximum allowable aspect ratio. Bounding boxes with aspect ratios exceeding this value are removed.
+   */
+  void removeAspectRatioBoxes(std::vector<std::string> &names, std::vector<std::string> &target, float targetAspectRatio);
+
+  /**
+   * @brief Writes segmentation annotations to a JSON file.
+   *
+   * This function processes segmentation output from a TensorRT model,
+   * generates binary masks for each class, extracts polygon contours,
+   * and saves the annotations in JSON format.
+   *
+   * @param json_path Path to the output JSON file.
+   * @param image_name Name of the image being processed.
+   * @param width Width of the original image.
+   * @param height Height of the original image.
+   * @param colormap Vector of Colormap objects mapping class indices to names.
+   */  
+  void writeSegmentationAnnotation(const std::string json_path, const std::string image_name, int width, int height, std::vector<Colormap> colormap);
+
+  /**
+   * @brief Retrieves the input size of the TensorRT model.
+   *
+   * This function extracts the input dimensions of the TensorRT model's first binding tensor.
+   *
+   * @param batch Pointer to store batch size.
+   * @param chan Pointer to store the number of channels.
+   * @param height Pointer to store the height.
+   * @param width Pointer to store the width.
+   */
+
+  std::string getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap);
+  
+  void getInputSize(int *batch, int *chan, int *height, int *width);
+  
+  /**
+   * Shared pointer to a TensorRT common utility class, encapsulating common TensorRT operations.
+   */
+  std::shared_ptr<tensorrt_common::TrtCommon> trt_common_;  
 
   /**
    * Host-side input buffer for the model, typically used for pre-processing input data before inference.
@@ -771,6 +1048,13 @@ public:
   std::vector<BBoxInfo> bbox_;
 
   /**
+   * Stores names for detetction
+   */
+  std::vector<std::string>  names_;
+
+  std::vector<std::vector<int>> colormap_;
+  
+  /**
    * Stores mask images for each detected object, typically used in segmentation tasks.
    */
   std::vector<cv::Mat> masks_;
@@ -783,7 +1067,8 @@ public:
   /**
    * Stores bev maps generated from the depth and segseg with calibration info .
    */  
-  cv::Mat bevmap_;  
+  cv::Mat bevmap_;
+  cv::Mat sparsemap_;    
 
   /**
    * Stores bounding boxes detected by the subnet, allowing for specialized processing on selected detections.
@@ -814,9 +1099,82 @@ public:
   /**
    * Stores keypoints detected by the primary network.
    */  
-  std::vector<KeypointInfo> keypoint_;  
+  std::vector<KeypointInfo> keypoint_;
+
+  int max_index_;
+  /**
+   * @brief Host-side pointer for storing image data during preprocessing.
+   */
+  unsigned char* h_img_;
+
+  /**
+   * @brief Device-side pointer for storing image data after transferring from the host.
+   */
+  unsigned char* d_img_;
+
+  /**
+   * @brief Device-side unique pointer for storing the depth map generated on the GPU.
+   */
+  CudaUniquePtr<unsigned char[]> d_depthmap_;
+
+  /**
+   * @brief Device-side unique pointer for storing the mask data used in back projection or segmentation.
+   */
+  CudaUniquePtr<unsigned char[]> d_mask_;
+
+  /**
+   * @brief Device-side unique pointer for storing the bird's-eye view (BEV) map.
+   */
+  CudaUniquePtr<unsigned char[]> d_bevmap_;
+
+  /**
+   * @brief Device-side unique pointer for storing the color map used for visualizing depth or segmentation data.
+   */
+  CudaUniquePtr<unsigned char[]> d_depth_colormap_;
+
+  /**
+   * @brief Device-side unique pointer for storing road segment IDs used in smoothing or segmentation tasks.
+   */
+  CudaUniquePtr<int[]> d_road_ids_;
+
+  /**
+   * @brief CUDA-managed unique pointer for the color map in RGB format.
+   *
+   * This color map is used to visualize various BEV (Bird's Eye View) and height maps
+   * with appropriate color coding for different features.
+   */
+  CudaUniquePtr<ucharRGB[]> d_colorMap_;
+
+  /**
+   * @brief CUDA-managed unique pointer for the resized mask.
+   *
+   * This memory holds resized segmentation masks for GPU processing during
+   * operations like blending, back projection, and height map generation.
+   */  
+  CudaUniquePtr<unsigned char[]> d_resized_mask_;
+
+  /**
+   * @brief Free space map in BEV representation.
+   *
+   * This OpenCV matrix is used to visualize areas identified as free space
+   * in the BEV map. It is updated during segmentation and back projection processes.
+   */  
+  cv::Mat freespace_;
+
+  /**
+   * @brief Occupancy grid map in BEV representation.
+   *
+   * This OpenCV matrix represents the road, obstacles, and other features
+   * in the BEV. It is used to analyze and visualize the spatial layout
+   * of the environment.
+   */  
+  cv::Mat occupancy_;    
 };
 
 }  // namespace tensorrt_lightnet
 
+#ifdef __cplusplus
+}
+#endif // __cplusplus
 #endif  // TENSORRT_LIGHTNET__TENSORRT_LIGHTNET_HPP_
+

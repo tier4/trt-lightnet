@@ -35,15 +35,26 @@ file(GLOB_RECURSE sources
   src/sensor/CalibratedSensorParser.cpp
   src/sensor/SensorParser.cpp
   src/pcdUtils/pcd2image.cpp
+  src/fswp/fswp.cpp
+  src/preprocess.cu
+  src/tensorrt_lightnet/tensorrt_lightnet_ctypes.cpp
   )
 
 # Create a shared library
-add_library(detector SHARED ${sources})
-target_link_libraries(detector
+add_library(lightnetinfer SHARED ${sources})
+
+target_link_libraries(lightnetinfer
   nvinfer nvinfer_plugin nvparsers nvonnxparser
   cuda cudart
+  gflags
+  boost_system boost_filesystem
+  cnpy
+  z
+  dl
+  ${OpenCV_LIBS}
+  "stdc++fs"  
   )
-target_include_directories(detector PRIVATE
+target_include_directories(lightnetinfer PRIVATE
   extra/
   ${OpenCV_INCLUDE_DIRS}
   ${CUDA_TOOLKIT_ROOT_DIR}/include
@@ -75,3 +86,5 @@ target_link_libraries(trt-lightnet
   dl
   "stdc++fs"
   )
+
+install(TARGETS lightnetinfer LIBRARY DESTINATION lib PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)

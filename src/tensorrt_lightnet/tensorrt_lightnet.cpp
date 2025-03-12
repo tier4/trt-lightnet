@@ -56,6 +56,8 @@ SOFTWARE.
 #include <iostream>
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 extern const unsigned char jet_colormap[256][3];
 extern const unsigned char magma_colormap[256][3];
 
@@ -76,6 +78,23 @@ calculateAngle(double x1, double y1, double x2, double y2) {
   double angleDegrees = angleRadians * (180.0 / M_PI);
 
   return angleDegrees;
+}
+
+std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
+{  
+  std::vector<std::vector<cv::Point>> contours;  
+  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  return contours;
+}
+
+void write_json_with_order(const json& j, const std::string& filename) {
+  std::ofstream file(filename);
+  if (!file) {
+    std::cerr << "Error: Could not create JSON file." << std::endl;
+    return;
+  }
+  file << std::setw(4) << j << std::endl;
+  file.close();
 }
 
 /**
@@ -261,7 +280,7 @@ namespace tensorrt_lightnet
    * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
    * TensorRT engine initialization fails.
    */  
-  TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config)
+  TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format)
   {
     const std::string& model_path = model_config.model_path;
     const std::string& precision = inference_config.precision;
@@ -304,14 +323,16 @@ namespace tensorrt_lightnet
 
       calibration_table.replace_extension(table_extension);
       histogram_table.replace_extension("histogram.table");
-
+      
       // Initialize the correct calibrator based on the calibration type.
       std::unique_ptr<nvinfer1::IInt8Calibrator> calibrator = initializeCalibrator(build_config, stream, calibration_table, histogram_table, norm_factor_);
 
-      trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      //trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      trt_common_ = std::make_shared<tensorrt_common::TrtCommon>(      
 								 model_path, precision, std::move(calibrator), batch_config, max_workspace_size, build_config);
     } else {
-      trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
+      trt_common_ = std::make_shared<tensorrt_common::TrtCommon>(            
+								 //trt_common_ = std::make_unique<tensorrt_common::TrtCommon>(
 								 model_path, precision, nullptr, batch_config, max_workspace_size, build_config);
     }
 
@@ -326,9 +347,42 @@ namespace tensorrt_lightnet
     nms_threshold_ = nms_threshold;
     anchors_ = anchors;
     num_anchor_ = num_anchor;
-
+    max_index_ = -1;
     // Allocate GPU memory for inputs and outputs based on tensor dimensions.
     allocateMemory();
+
+    h_img_ = NULL;
+    d_img_ = NULL;
+    d_depthmap_ = NULL;
+    d_mask_ = NULL;
+    d_bevmap_ = NULL;
+    d_depth_colormap_ = NULL;
+    d_colorMap_ = NULL;
+    d_resized_mask_  = NULL;   
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;    
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify depth map tensors by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+	// Check if the tensor name contains "lgx" and the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  int src_size = outputH * outputW * 3;
+	  d_depthmap_ = cuda_utils::make_unique<unsigned char[]>(src_size);
+	  d_depth_colormap_ = cuda_utils::make_unique<unsigned char[]>(src_size);
+	  if (depth_format == "magma") {
+	    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), magma_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));
+	  } else {
+	    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), jet_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));
+	  }
+	}
+      }
+    }
   }
 
   /**
@@ -420,7 +474,7 @@ namespace tensorrt_lightnet
     if (images.empty()) {
       std::cerr << "Preprocess called with an empty image batch." << std::endl;
       return;
-    }    
+    }
     const auto batch_size = images.size();
     auto input_dims = trt_common_->getBindingDimensions(0);
     input_dims.d[0] = batch_size; // Adjust the batch size in dimensions.
@@ -450,6 +504,69 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * @brief Preprocesses input images on the GPU for inference.
+   *
+   * This function prepares the input image data to be compatible with the model's input dimensions.
+   * It supports only a single batch of images and resizes the input to match the model's required dimensions.
+   *
+   * @param images A vector of input images (cv::Mat) to preprocess.
+   */
+  void TrtLightnet::preprocess_gpu(const std::vector<cv::Mat> &images) {
+    // Check if the input image batch is empty
+    if (images.empty()) {
+      std::cerr << "Preprocess called with an empty image batch." << std::endl;
+      return;
+    }
+
+    // Get batch size and input dimensions
+    const auto batch_size = images.size();
+    auto input_dims = trt_common_->getBindingDimensions(0);
+
+    // Adjust the batch size in the input dimensions
+    input_dims.d[0] = batch_size;
+    trt_common_->setBindingDimensions(0, input_dims); // Update dimensions with the new batch size
+
+    // Extract input dimensions
+    const float inputH = static_cast<float>(input_dims.d[2]);
+    const float inputW = static_cast<float>(input_dims.d[3]);
+    const float inputC = static_cast<float>(input_dims.d[1]);
+
+    // Normalization factor
+    float norm = 1.0f / 255.0f;
+
+    // Get the dimensions of the first image (assuming all images in the batch are the same size)
+    int w = images[0].cols;
+    int h = images[0].rows;
+    int src_size = 3 * w * h; // Source size in bytes (3 channels: RGB)
+
+    // Allocate pinned (host) and device memory for image data if not already allocated
+    if (!h_img_) {
+      CHECK_CUDA_ERROR(cudaMallocHost((void **)&h_img_, sizeof(unsigned char) * src_size));
+      CHECK_CUDA_ERROR(cudaMalloc((void **)&d_img_, sizeof(unsigned char) * src_size));
+    }
+
+    // Copy image data to pinned memory
+    memcpy(h_img_, images[0].data, src_size * sizeof(unsigned char));
+
+    // Copy image data from pinned memory to device memory asynchronously
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_img_, h_img_, src_size * sizeof(unsigned char), cudaMemcpyHostToDevice, *stream_));
+
+    // Perform GPU-based blob creation (resize and normalize the image)
+    blobFromImageGpu(
+		     (float*)(input_d_.get()), // Pointer to device input memory
+		     d_img_,                  // Pointer to device source image data
+		     inputW,                  // Target width
+		     inputH,                  // Target height
+		     inputC,                  // Number of channels
+		     w,                       // Original width
+		     h,                       // Original height
+		     3,                       // Number of channels (RGB)
+		     norm,                    // Normalization factor
+		     *stream_                 // CUDA stream
+		     );
+  }
+
+  /**
    * Prepares the inference by ensuring the network is initialized and setting up the input tensor.
    * @return True if the network is already initialized; false otherwise.
    */
@@ -473,7 +590,6 @@ namespace tensorrt_lightnet
     }
 
     trt_common_->enqueueV2(buffers.data(), *stream_, nullptr);
-
     // Retrieve output tensors from device buffers
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
@@ -485,6 +601,43 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * Prepares the inference by ensuring the network is initialized and setting up the input tensor.
+   * @return True if the network is already initialized; false otherwise.
+   */
+  bool TrtLightnet::doInference(const int batchSize)
+  {
+    if (!trt_common_->isInitialized()) {
+      return false;
+    }
+    return infer(batchSize);
+  }
+
+  /**
+   * Executes the inference operation by setting up the buffers, launching the network, and transferring the outputs.
+   * @return Always returns true to indicate the inference operation was called.
+   */
+  bool TrtLightnet::infer(const int batchSize)
+  {
+    std::vector<void *> buffers = {input_d_.get()};
+    for (int i = 0; i < static_cast<int>(output_d_.size()); i++) {
+      buffers.push_back(output_d_.at(i).get());
+    }
+
+    trt_common_->enqueueV2(buffers.data(), *stream_, nullptr);
+
+    // Retrieve output tensors from device buffers
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      auto dims = trt_common_->getBindingDimensions(i);
+      dims.d[0] = batchSize;
+      auto output_size = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
+      output_size *= batchSize;
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(output_h_.at(i-1).get(), output_d_.at(i-1).get(), sizeof(float) * output_size, cudaMemcpyDeviceToHost, *stream_));
+    }
+    cudaStreamSynchronize(*stream_);
+    return true;
+  }
+  
+  /**
    * Draws bounding boxes on an image based on detection results.
    * @param img The image to draw bounding boxes on.
    * @param bboxes The detected bounding boxes.
@@ -492,11 +645,11 @@ namespace tensorrt_lightnet
    * @param names The names of the detected classes.
    */
   void TrtLightnet::drawBbox(cv::Mat &img, std::vector<BBoxInfo> bboxes, std::vector<std::vector<int>> &colormap, std::vector<std::string> names)
-  {    
+  {
     for (const auto& bbi : bboxes) {
       int id = bbi.classId;
       std::stringstream stream;
-
+      if (!names.empty() && names[id] == "none") continue;
       if (!names.empty()) {
 	stream << std::fixed << std::setprecision(2) << names[id] << "  " << bbi.prob;
       } else {
@@ -504,7 +657,6 @@ namespace tensorrt_lightnet
       }
       
       cv::Scalar color = colormap.empty() ? cv::Scalar(255, 0, 0) : cv::Scalar(colormap[id][2], colormap[id][1], colormap[id][0]);
-      
       if (bbi.isHierarchical) {
 	std::string c_name;
 	if (bbi.subClassId == 0) {
@@ -514,7 +666,7 @@ namespace tensorrt_lightnet
 	} else {
 	  color = cv::Scalar(0, 0, 255);
 	}
-	if (names[id] == "arrow") {
+	if (!names.empty() && names[id] == "arrow") {
 	  float sin = bbi.sin;
 	  float cos = bbi.cos;
 	  float deg = atan2(sin, cos) * 180.0 / M_PI;
@@ -529,10 +681,10 @@ namespace tensorrt_lightnet
 	  if (xlen > 12) {
 	    if (bbi.subClassId == 0) {
 	      int y_offset = 0;
-	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/16);
+	      arrow(img, cv::Point{xcenter, ycenter + y_offset}, cv::Point{xr, yr + y_offset}, color, xlen/8);
 	    }
 	  }
-	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 24), 4, 1.0, color, 1);	  
+	  cv::putText(img, stream_TLR.str(), cv::Point(bbi.box.x1, bbi.box.y2 + 24), 1, 1.0, color, 1);	  
 	}
       }
       if (bbi.keypoint.size() == 0) {
@@ -583,7 +735,6 @@ namespace tensorrt_lightnet
 	detection_count++;
       }
     }
-
     bbox_ = nonMaximumSuppression(nms_threshold_, bbox_); // Apply NMS and return the filtered bounding boxes.
     //bbox_ = nmsAllClasses(nms_threshold_, bbox_, num_class_); // Apply NMS and return the filtered bounding boxes.
   }
@@ -634,6 +785,452 @@ namespace tensorrt_lightnet
     return bbox_;
   }
 
+  std::vector<BBoxInfo> TrtLightnet::getBbox(const int imageH, const int imageW, const int batchIndex)
+  {
+    bbox_.clear();
+    const auto inputDims = trt_common_->getBindingDimensions(0);
+    int inputW = inputDims.d[3];
+    int inputH = inputDims.d[2];
+    // Channel size formula to identify relevant tensor outputs for bounding boxes.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    int tlr_size = (4 + 1 + num_class_ + 3 + 2) * num_anchor_;
+
+    int detection_count = 0;
+    for (int i = 0; i < trt_common_->getNbBindings(); i++) {
+      if (trt_common_->bindingIsInput(i)) {
+	continue;
+      }
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int gridW = dims.d[3];
+      int gridH = dims.d[2];
+      int chan = dims.d[1];
+      float *p_output = &((output_h_.at(i-1).get())[batchIndex * (gridW * gridH * chan)]);
+      if (chan_size == chan) { // Filtering out the tensors that match the channel size for detections.
+	std::vector<BBoxInfo> b = decodeTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, p_output, gridW, gridH);
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
+      } else if (tlr_size == chan) {
+	//Decode TLR Tensor
+	std::vector<BBoxInfo> b = decodeTLRTensor(0, imageH, imageW, inputH, inputW, &(anchors_[num_anchor_ * (detection_count) * 2]), num_anchor_, p_output, gridW, gridH);
+	bbox_.insert(bbox_.end(), b.begin(), b.end());
+	detection_count++;
+      }
+    }
+
+    return nonMaximumSuppression(nms_threshold_, bbox_); // Apply NMS and return the filtered bounding boxes.
+  }    
+  
+  
+  std::vector<std::string> TrtLightnet::getNames()
+  {
+    return names_;
+  }
+
+  int TrtLightnet::getBatchSize()
+  {
+    return batch_size_;
+  }  
+
+  void TrtLightnet::setNames(std::vector<std::string> names)
+  {
+    names_ = names;
+  }
+
+  void TrtLightnet::setDetectionColormap(std::vector<std::vector<int>> &colormap)
+  {
+    colormap_ = colormap;
+  }
+
+  std::vector<std::vector<int>> TrtLightnet::getDetectionColormap(void)
+  {
+    return colormap_;
+  }
+
+  /**
+   * Computes the area of a single bounding box.
+   *
+   * @param bbox The bounding box for which the area is to be calculated.
+   * @return The area of the bounding box. Returns 0 if the dimensions are invalid.
+   */
+  float TrtLightnet::calculateBBoxArea(const BBox& bbox) {
+    float width = std::max(0.0f, bbox.x2 - bbox.x1);
+    float height = std::max(0.0f, bbox.y2 - bbox.y1);
+    return width * height;
+  }
+
+  /**
+   * Computes the overlapping area between two bounding boxes.
+   *
+   * @param bbox1 The first bounding box.
+   * @param bbox2 The second bounding box.
+   * @return The area of the overlapping region between the two bounding boxes. Returns 0 if there is no overlap.
+   */
+  float TrtLightnet::calculateOverlapArea(const BBox& bbox1, const BBox& bbox2) {
+    float overlapX1 = std::max(bbox1.x1, bbox2.x1);
+    float overlapY1 = std::max(bbox1.y1, bbox2.y1);
+    float overlapX2 = std::min(bbox1.x2, bbox2.x2);
+    float overlapY2 = std::min(bbox1.y2, bbox2.y2);
+
+    // Calculate overlap width and height
+    float overlapWidth = std::max(0.0f, overlapX2 - overlapX1);
+    float overlapHeight = std::max(0.0f, overlapY2 - overlapY1);
+
+    // Return the area of the overlapping region
+    return overlapWidth * overlapHeight;
+  }
+
+  /**
+   * Computes the aspect ratio of a bounding box.
+   *
+   * @param bbox The bounding box for which the aspect ratio is to be calculated.
+   * @return The aspect ratio (width / height). Returns 0 if the height is zero.
+   */  
+  float TrtLightnet::calculateAspectRatio(const BBox& bbox) {
+    float width = std::max(0.0f, bbox.x2 - bbox.x1);
+    float height = std::max(0.0f, bbox.y2 - bbox.y1);
+    return (height > 0.0f) ? (width / height) : 0.0f; // Avoid division by zero
+  }
+  
+  /**
+   * Checks if one bounding box is completely contained within another bounding box.
+   *
+   * @param bbox1 The bounding box to check for containment.
+   * @param bbox2 The bounding box that may contain bbox1.
+   * @return True if bbox1 is contained within bbox2, false otherwise.
+   */
+  bool TrtLightnet::isContained(const BBox& bbox1, const BBox& bbox2)
+  {
+    return (bbox1.x1 >= bbox2.x1 && bbox1.y1 >= bbox2.y1 &&
+	    bbox1.x2 <= bbox2.x2 && bbox1.y2 <= bbox2.y2);
+  }
+
+  /**
+   * Removes bounding boxes that are contained within others.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on containment.
+   */
+  void TrtLightnet::removeContainedBBoxes(std::vector<std::string> &names, std::vector<std::string> &target)
+  {
+    std::vector<BBoxInfo> result;
+
+    for (size_t i = 0; i < bbox_.size(); ++i) {
+      bool isContainedFlag = false;
+      bool flg = false;
+      for (auto &t : target) {
+	if (t == names[bbox_[i].classId]) {
+	  flg = true;
+	}
+      }
+      if (!flg) {
+	result.push_back(bbox_[i]);
+	continue;
+      }
+      for (size_t j = 0; j < bbox_.size(); ++j) {
+	bool flg = false;
+	for (auto &t : target) {
+	  if (t == names[bbox_[j].classId]) {
+	    flg = true;
+	  }
+	}
+	if (!flg) {	  
+	  continue;
+	}
+	if (i != j) {	
+	  float overlap =  calculateOverlapArea(bbox_[i].box, bbox_[j].box);
+	  float area = calculateBBoxArea(bbox_[i].box);
+	  if ((overlap / area) > 0.85) {
+	    isContainedFlag = true;
+	    break;
+	  }
+	}
+      }
+
+      if (!isContainedFlag) {
+	result.push_back(bbox_[i]);
+      }
+    }
+      bbox_ = result;
+  }
+
+  /**
+   * Removes bounding boxes whose aspect ratio exceeds a specified threshold.
+   *
+   * @param names A list of class names corresponding to bounding box class IDs.
+   * @param target A list of target class names to filter for removal based on aspect ratio.
+   * @param targetAspectRatio The maximum allowable aspect ratio. Bounding boxes with aspect ratios exceeding this value are removed.
+   */
+  void TrtLightnet::removeAspectRatioBoxes(std::vector<std::string> &names, std::vector<std::string> &target, float targetAspectRatio) {
+    std::vector<BBoxInfo> result;
+
+    for (const auto& bboxInfo : bbox_) {
+      bool flg = false;
+      for (auto &t : target) {
+	if (t == names[bboxInfo.classId]) {
+	  flg = true;
+	}
+      }
+      if (!flg) {
+	result.push_back(bboxInfo);	
+	continue;
+      }      
+      float aspectRatio = calculateAspectRatio(bboxInfo.box);
+      if (aspectRatio > targetAspectRatio) {
+	result.push_back(bboxInfo);
+      }
+    }
+
+    bbox_ =  result;
+  }
+
+  /**
+   * @brief Processes a BEV (Bird's Eye View) map to identify and visualize free space.
+   *
+   * This function processes a BEV map (`bevmap_`) to create a free space map (`freespace_`) by:
+   * - Converting specific pixel values in the BEV map to a binary image.
+   * - Smoothing the binary image and detecting contours.
+   * - Identifying the largest contour and visualizing it along with other contours.
+   * - Displaying the resulting free space and binary image.
+   *
+   * @param road_ids A vector of road IDs (currently not used within the function).
+   */
+  void TrtLightnet::makeFreespace(std::vector<int> road_ids) {
+    // Initialize the free space map and a grayscale version of it.
+    freespace_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Free space map (RGB).
+    cv::Mat grayscale = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC1);  // Grayscale map for processing.
+
+    // Iterate through the BEV map to identify specific pixels representing the road surface.
+    for (int x = 0; x < GRID_W; x++) {
+      for (int y = GRID_H - 1; y >= 0; y--) {
+	cv::Vec3b b = bevmap_.at<cv::Vec3b>(y, x);
+	if (b[0] == 128 && b[1] == 64 && b[2] == 128) {  // Road pixel identified.
+	  grayscale.at<uchar>(y, x) = 255;  // Mark road pixels in grayscale.
+	}
+      }
+    }
+
+    // Smooth the grayscale image using a Gaussian blur.
+    cv::Mat smoothedImage;
+    cv::GaussianBlur(grayscale, smoothedImage, cv::Size(7, 7), 0);
+
+    // Convert the smoothed image to a binary image using a threshold.
+    cv::Mat binaryImage;
+    cv::threshold(smoothedImage, binaryImage, 0, 255, cv::THRESH_BINARY);
+
+    // Display the binary image for debugging purposes.
+    cv::imshow("binaryImage", binaryImage);
+
+    // Find contours in the binary image.
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(binaryImage, contours, hierarchy, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+
+    // Identify the largest contour by area.
+    int largestContourIndex = -1;
+    double largestArea = 0.0;
+    for (size_t i = 0; i < contours.size(); i++) {
+      double area = cv::contourArea(contours[i]);
+      if (area > largestArea) {
+	largestArea = area;
+	largestContourIndex = static_cast<int>(i);
+      }
+    }
+
+    // Draw all outer contours in green (indicating free space).
+    for (size_t i = 0; i < contours.size(); i++) {
+      if (hierarchy[i][3] == -1) {  // Only draw outermost contours.
+	cv::drawContours(freespace_, contours, static_cast<int>(i), cv::Scalar(0, 255, 0), cv::FILLED);
+      }
+    }
+
+    // Highlight the largest contour in green if found.
+    if (largestContourIndex != -1) {
+      cv::drawContours(freespace_, contours, largestContourIndex, cv::Scalar(0, 255, 0), cv::FILLED);
+    }
+
+    // Draw other contours (not the largest) in red.
+    for (size_t i = 0; i < contours.size(); i++) {
+      if (i != (size_t)largestContourIndex) {
+	cv::drawContours(freespace_, contours, static_cast<int>(i), cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_AA, hierarchy);
+      }
+    }
+
+    // Display the free space map for debugging purposes.
+    cv::imshow("freespace", freespace_);
+  }
+  
+  /**
+   * @brief Generates and returns the occupancy grid for the BEV (Bird's Eye View) map.
+   * 
+   * The occupancy grid is used to represent road, obstacles, and other entities
+   * in a bird's eye view format. This function initializes and updates the 
+   * occupancy grid based on the provided BEV map and bounding box information.
+   *
+   * @return cv::Mat The occupancy grid as a CV Mat object.
+   */
+  cv::Mat TrtLightnet::getOccupancyGrid(void) {
+    return occupancy_;
+  }
+
+  /**
+   * @brief Creates the occupancy grid based on road and obstacle data.
+   *
+   * This function processes the BEV map (`bevmap_`) and bounding box data (`bbox_`) to:
+   * - Identify and mark road areas in the occupancy grid.
+   * - Map bounding boxes to 3D coordinates and project them onto the BEV map.
+   * - Render obstacles and roads in distinct colors based on a provided colormap.
+   * 
+   * @param road_ids A vector of road IDs (currently unused in the function).
+   * @param im_w Image width of the input data.
+   * @param im_h Image height of the input data.
+   * @param calibdata Camera calibration data used for coordinate transformations.
+   * @param colormap A 2D vector specifying the color for each class of objects.
+   * @param names A list of class names corresponding to the object classes.
+   * @param target A list of target class names to process.
+   */
+  void TrtLightnet::makeOccupancyGrid(std::vector<int> road_ids, const int im_w, const int im_h, const Calibration calibdata,std::vector<std::vector<int>> &colormap, std::vector<std::string> names, std::vector<std::string> &target)
+  {
+    int block_size = 4;
+    
+    occupancy_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
+    for (int x = block_size; x < GRID_W-block_size; x+=block_size) {
+      for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
+	bool flg_road = false;
+	for (int xb = -block_size; xb <= block_size; xb++) {
+	  for (int yb = -block_size; yb <= block_size; yb++) {	
+	    cv::Vec3b b = bevmap_.at<cv::Vec3b>(y-yb, x-xb);
+	    flg_road = (b[0] == 128 && b[1] == 64 && b[2] == 128) ? true : false;	      
+	  }
+	}
+	if (flg_road) {
+	  for (int xb = -block_size; xb <= block_size; xb++) {
+	    for (int yb = -block_size; yb <= block_size; yb++) {
+	      cv::Vec3b &og = occupancy_.at<cv::Vec3b>(y-yb, x-xb);
+	      og[0] = 128;
+	      og[1] = 64;
+	      og[2] = 128;	  	      
+	    }
+	  }
+	}
+      }
+    }
+
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(outputW) / static_cast<float>(im_w);
+	  float scale_h = static_cast<float>(outputH) / static_cast<float>(im_h);
+	  float *buf = static_cast<float *>(output_h_.at(i - 1).get());
+	  float gran_h = static_cast<float>(GRID_H) / calibdata.max_distance;
+
+	  // Process each bounding box.
+	  for (const auto &b : bbox_) {
+	    bool flg = false;
+	    if ((names[b.classId] == "UNKNOWN") ||
+		(names[b.classId] == "CAR") ||
+		(names[b.classId] == "TRUCK") ||
+		(names[b.classId] == "BUS") ||
+		(names[b.classId] == "BICYCLE") ||
+		(names[b.classId] == "MOTORBIKE") ||
+		(names[b.classId] == "PEDESTRIAN")) {		
+	      flg = true;
+	    }
+
+	    if (!flg) {
+	      continue;
+	    }
+
+	    // Calculate coordinates for the BEV map.
+	    int xlen = (b.box.x2 - b.box.x1) ;
+	    int offset = (int)(xlen * 0.25);
+	    for (int w = b.box.x1+offset; w <= b.box.x2-offset; w++) {
+	      int cx = w;
+	      int cy = (b.box.y2+b.box.y1)/2;
+	      if (cx < 0 || cx >= im_w) continue;
+	      if (cy < 0 || cy >= im_h) continue;	      
+	      int stride = outputW * static_cast<int>(cy * scale_h);
+	      float distance = buf[stride + static_cast<int>(cx * scale_w)] * calibdata.max_distance;
+	      distance = std::min(distance, calibdata.max_distance);
+
+	      float src_x = static_cast<float>(cx);
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance;
+
+	      if (x3d > 20.0) {
+		continue;
+	      }
+
+	      x3d = (x3d + 20.0f) * GRID_W / 40.0f;
+	      int x_bev = static_cast<int>(x3d);
+	      int y_bev = static_cast<int>(GRID_H - static_cast<int>(distance * gran_h));
+	      auto color = cv::Scalar(colormap[b.classId][2], colormap[b.classId][1], colormap[b.classId][0]);
+	      x_bev = x_bev >= GRID_W ? GRID_W-1  : x_bev;
+	      x_bev = x_bev < 0 ? 0  : x_bev;
+	      y_bev = y_bev >= GRID_H ? GRID_H-1  : y_bev;
+	      y_bev = y_bev < 0 ? 0  : y_bev;	      	      
+	      // Plot a circle onto the BEV map.
+	      for (int xb = -block_size/4; xb <= block_size/4; xb++) {
+		for (int yb = -block_size/4; yb <= block_size/4; yb++) {		  
+		  int xx = x_bev - xb;
+		  int yy = y_bev - yb;
+		  xx = xx >= GRID_W ? GRID_W-1  : xx;
+		  xx = xx < 0 ? 0  : xx;
+		  yy = yy >= GRID_H ? GRID_H-1  : yy;
+		  yy = yy < 0 ? 0  : yy;	      	      		  
+		  cv::Vec3b &og = occupancy_.at<cv::Vec3b>(yy, xx);
+		  og[0] = color[0];
+		  og[1] = color[1];
+		  og[2] = color[2];		  
+		}
+	      }
+	      
+	    }
+	  }
+	}
+      }
+    }
+
+    block_size = 8;
+    for (int x = 0; x < GRID_W; x++) {
+      for (int y =  GRID_H - 1 - block_size; y >=block_size; y-=block_size) {
+	bool flg_road = false;
+	cv::Vec3b b = bevmap_.at<cv::Vec3b>(y, x);
+	flg_road = (b[0] == 128 && b[1] == 64 && b[2] == 128) ? true : false;	      
+	if (flg_road) {
+	  flg_road = false;
+	  for (int yb = y - block_size; yb < y; yb++) {
+	      cv::Vec3b &og = occupancy_.at<cv::Vec3b>(yb, x);
+	      if (!flg_road) {
+		flg_road = (og[0] == 128 && og[1] == 64 && og[2] == 128) ? true : false;
+	      }
+	      if (flg_road) {
+		if (og[0] == 0 && og[1] == 0 && og[2] == 0) {
+		  og[0] = 128;
+		  og[1] = 64;
+		  og[2] = 128;
+		} else if (!((og[0] == 128 && og[1] == 64 && og[2] == 128) || (og[0] == 0 && og[1] == 0 && og[2] == 0))) {
+		  flg_road = false;
+		}
+	      }
+	  }
+	}
+      }
+    }    
+    cv::imshow("occupancy_grid", occupancy_);    
+  }
+  
   /**
    * @brief Smoothes the depth map using road segmentation information.
    *
@@ -641,7 +1238,7 @@ namespace tensorrt_lightnet
    * by averaging distances over regions identified as roads or similar surfaces 
    * in the segmentation map. The smoothed depth values are then applied back to the depth map.
    */
-  void TrtLightnet::smoothDepthmapFromRoadSegmentation() {
+  void TrtLightnet::smoothDepthmapFromRoadSegmentation(std::vector<int> road_ids) {
     // Formula to identify tensors unrelated to bounding box detections.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
@@ -672,7 +1269,6 @@ namespace tensorrt_lightnet
 	      const float scaleW = static_cast<float>(outputW) / segWidth;
 	      const float scaleH = static_cast<float>(outputH) / segHeight;
 	      const int *argmax = (int *)(output_h_.at(j - 1).get());
-
 	      // Iterate over the height of the depth map.
 	      for (int y = 0; y < outputH; y++) {
 		float sum_dist = 0.0;
@@ -681,7 +1277,13 @@ namespace tensorrt_lightnet
 		// First pass: Calculate average depth for road segments.
 		for (int x = 0; x < outputW; x++) {
 		  const int id = argmax[static_cast<int>(x * scaleW) + segWidth * static_cast<int>(y * scaleH)];
-		  if ((id >= 8 && id <= 12) || id == 5) { // Road-related segmentation IDs
+		  bool is_road = false;
+		  for (const int& value : road_ids) {
+		    if (value == id) {
+		      is_road = true;
+		    }
+		  }
+		  if (is_road) { // Road-related segmentation IDs		  
 		    count++;
 		    sum_dist += buf[x + outputW * y];
 		  }
@@ -695,7 +1297,13 @@ namespace tensorrt_lightnet
 		// Second pass: Apply smoothed distance to road segment pixels.
 		for (int x = 0; x < outputW; x++) {
 		  const int id = argmax[static_cast<int>(x * scaleW) + segWidth * static_cast<int>(y * scaleH)];
-		  if ((id >= 8 && id <= 12) || id == 5) { // Road-related segmentation IDs
+		  bool is_road = false;
+		  for (const int& value : road_ids) {
+		    if (value == id) {
+		      is_road = true;
+		    }
+		  }		  
+		  if (is_road) { // Road-related segmentation IDs		  		  
 		    buf[x + outputW * y] = sum_dist;
 		  }
 		}
@@ -706,7 +1314,67 @@ namespace tensorrt_lightnet
       }
     }
   }
-    
+
+  /**
+   * @brief Smooths a depth map using road segmentation on the GPU.
+   *
+   * This function identifies relevant tensors for depth maps and segmentation,
+   * then applies GPU-based smoothing of the depth map using road segmentation labels.
+   *
+   * @param road_ids A vector of road segmentation label IDs to identify road regions.
+   */
+  void TrtLightnet::smoothDepthmapFromRoadSegmentationGpu(std::vector<int> road_ids) {
+    // Formula to identify tensors unrelated to bounding box detections.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Iterate over all tensor bindings to locate depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify depth map tensors by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Verify tensor type is FLOAT and name contains "lgx".
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+
+	  // Find the segmentation tensor for road segmentation labels.
+	  for (int j = 1; j < trt_common_->getNbBindings(); j++) {
+	    std::string seg_name = trt_common_->getIOTensorName(j);
+
+	    if (contain(seg_name, "argmax")) {
+	      const auto seg_dims = trt_common_->getBindingDimensions(j);
+	      const int segWidth = seg_dims.d[3];
+	      const int segHeight = seg_dims.d[2];
+	      int numRoadIds = static_cast<int>(road_ids.size());
+
+	      // Allocate device memory for road IDs if not already allocated.
+	      if (!d_road_ids_) {
+		d_road_ids_ = cuda_utils::make_unique<int[]>(numRoadIds);
+		CHECK_CUDA_ERROR(cudaMemcpyAsync(d_road_ids_.get(), road_ids.data(), sizeof(int) * numRoadIds, cudaMemcpyHostToDevice, *stream_));
+	      }
+
+	      // Perform GPU-based smoothing of the depth map.
+	      smoothDepthmapGpu(
+				(float *)output_d_.at(i - 1).get(),
+				(const int *)output_d_.at(j - 1).get(),
+				outputW, outputH,
+				segWidth, segHeight,
+				(int *)d_road_ids_.get(),
+				numRoadIds,
+				                            *stream_
+				);
+	    }
+	  }
+	}
+      }
+    }
+  }
+  
   /**
    * @brief Generates depth maps from the output tensors of the TensorRT model.
    *
@@ -738,15 +1406,16 @@ namespace tensorrt_lightnet
 
 	// Check if the tensor name contains "lgx" and the tensor type is 'kFLOAT'.
 	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+
 	  cv::Mat depthmap;
 
 	  // Initialize depth map with appropriate format (color or grayscale).
-	  if (depth_format == "magma") {
+	  if (depth_format == "magma" || depth_format == "jet") {
 	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC3);
 	  } else {
 	    depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC1);
 	  }
-
+	  
 	  float *buf = (float *)output_h_.at(i-1).get();
 
 	  // Populate the depth map with the processed depth values.
@@ -762,6 +1431,11 @@ namespace tensorrt_lightnet
 		depthmap.at<cv::Vec3b>(y, x)[0] = magma_colormap[255 - value][2];
 		depthmap.at<cv::Vec3b>(y, x)[1] = magma_colormap[255 - value][1];
 		depthmap.at<cv::Vec3b>(y, x)[2] = magma_colormap[255 - value][0];
+	      } else if (depth_format == "jet") {
+		// Apply the "magma" colormap.
+		depthmap.at<cv::Vec3b>(y, x)[0] = jet_colormap[255 - value][2];
+		depthmap.at<cv::Vec3b>(y, x)[1] = jet_colormap[255 - value][1];
+		depthmap.at<cv::Vec3b>(y, x)[2] = jet_colormap[255 - value][0];
 	      } else {
 		// Use grayscale format.
 		depthmap.at<unsigned char>(y, x) = value;
@@ -774,7 +1448,63 @@ namespace tensorrt_lightnet
       }
     }
   }
-  
+
+  /**
+   * @brief Generates depth maps using GPU-based processing.
+   *
+   * This function iterates through tensor bindings to locate depth map tensors,
+   * processes them using a GPU, and stores the resulting depth maps in a vector.
+   */
+  void TrtLightnet::makeDepthmapGpu(void) {
+    depthmaps_.clear();  // Clear any existing depth maps.
+
+    // Formula to identify output tensors not related to bounding box detections.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify depth map tensors by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  cv::Mat depthmap;
+	  // Initialize depth map with appropriate format (color or grayscale).
+	  depthmap = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+	  int src_size = outputH * outputW * 3;
+
+	  // Generate depth map on the GPU.
+	  generateDepthmapGpu(
+			      (unsigned char *)d_depthmap_.get(),
+			      (const float *)output_d_.at(i - 1).get(),
+			      d_depth_colormap_.get(),
+			      outputW, outputH,
+			      *stream_
+			      );
+
+	  // Copy the generated depth map from device to host memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   depthmap.data,
+					   d_depthmap_.get(),
+					   sizeof(unsigned char) * src_size,
+					   cudaMemcpyDeviceToHost,
+					   *stream_
+					   ));
+
+	  // Store the depth map in the vector.
+	  depthmaps_.push_back(depthmap);
+	}
+      }
+    }
+  }
+    
   /**
    * @brief Generates a bird's-eye view map (BEV map) by back-projecting a depth map onto a 2D grid.
    *
@@ -805,7 +1535,6 @@ namespace tensorrt_lightnet
 	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
 	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
 	  float scale_w = (float)(im_w) / (float)outputW;
-	  float scale_h = (float)(im_h) / (float)outputH;
 	  float *buf = (float *)output_h_.at(i-1).get();
 	  float gran_h = (float)GRID_H / calibdata.max_distance;
 	  int mask_w = masks_[0].cols;
@@ -824,25 +1553,29 @@ namespace tensorrt_lightnet
 
 	      // Compute 3D coordinates from the 2D image coordinates.
 	      float src_x = x * scale_w;
-	      float src_y = y * scale_h;
-	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
-	      float y3d = ((src_y - calibdata.v0) / calibdata.fy) * distance;
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance;
+
 
 	      // Skip points that are too far in the x-direction or below the ground plane.
 	      if (x3d > 20.0) continue;
 	      x3d = (x3d + 20.0) * GRID_W / 40.0;
 	      if (x3d > GRID_H || x3d < 0.0) continue;
-	      if (y3d < -2.5) continue;
 
+	      // Transform to BEV coordinates
+	      // \( x_{\text{bev}} = \frac{X}{\text{resolution}} + \frac{\text{BEV width}}{2} \)
+	      int x_bev = static_cast<int>(static_cast<int>(x3d));
+	      // \( y_{\text{bev}} = \frac{\text{BEV height}}{2} - \frac{Y}{\text{resolution}} \)
+	      //int y_bev = static_cast<int>(bevCenterY - Y / BEV_RESOLUTION);
+	      int y_bev = static_cast<int>(GRID_H - static_cast<int>(distance * gran_h));
 	      // Map the 3D point onto the 2D BEV map, applying the mask if available.
 	      if (masks_.size() > 0) {
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[0];
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[1];
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[2];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[0] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[0];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[1] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[1];
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[2] = masks_[0].at<cv::Vec3b>(y * mask_scale_h, x * mask_scale_w)[2];
 	      } else {
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[0] = 255;
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[1] = 255;
-		bevmap_.at<cv::Vec3b>(GRID_H - static_cast<int>(distance * gran_h), static_cast<int>(x3d))[2] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[0] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[1] = 255;
+		bevmap_.at<cv::Vec3b>(y_bev, x_bev)[2] = 255;
 	      }
 	    }
 	  }
@@ -852,6 +1585,283 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * @brief Creates a bird's-eye view (BEV) map from depth maps using GPU-based back projection.
+   *
+   * This function processes depth map tensors and applies GPU-based back projection
+   * to generate a BEV map using calibration data and masks.
+   *
+   * @param im_w Image width of the original input.
+   * @param im_h Image height of the original input.
+   * @param calibdata Calibration data required for back projection.
+   */
+  void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    bevmap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(im_w) / static_cast<float>(outputW);
+	  float scale_h = static_cast<float>(im_h) / static_cast<float>(outputH);
+	  int mask_w = masks_[0].cols;
+	  int mask_h = masks_[0].rows;
+	  int bev_size = GRID_H * GRID_W * 3;
+	  int mask_size = mask_h * mask_w * 3;
+
+	  // Allocate device memory for BEV map and mask if not already allocated.
+	  if (!d_bevmap_) {
+	    d_bevmap_ = cuda_utils::make_unique<unsigned char[]>(bev_size);
+	  }
+	  if (!d_mask_) {
+	    d_mask_ = cuda_utils::make_unique<unsigned char[]>(mask_size);
+	  }
+
+	  // Copy mask data to device memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   d_mask_.get(),
+					   masks_[0].data,
+					   sizeof(unsigned char) * mask_size,
+					   cudaMemcpyHostToDevice,
+					   *stream_
+					   ));
+
+	  // Initialize the BEV map memory on the device.
+	  cudaMemset(d_bevmap_.get(), 0, bev_size * sizeof(unsigned char));
+
+	  // Perform GPU-based back projection.
+	  getBackProjectionGpu(
+			       (const float *)output_d_.at(i - 1).get(),
+			       outputW, outputH,
+			       scale_w, scale_h,
+			       calibdata,
+			       mask_w, mask_h,
+			       (unsigned char *)d_mask_.get(),
+			       masks_[0].step,
+			       d_bevmap_.get(),
+			       bevmap_.step,
+			       padding,
+			       *stream_
+			       );
+
+	  // Copy the resulting BEV map from device to host memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   bevmap_.data,
+					   d_bevmap_.get(),
+					   sizeof(unsigned char) * bev_size,
+					   cudaMemcpyDeviceToHost,
+					   *stream_
+					   ));
+	}
+      }
+    }
+  }
+
+  /**
+   * @brief Performs a GPU-based back projection without densifying the BEV map.
+   *
+   * This function processes a depth map tensor to create a sparse BEV (Bird's Eye View) map
+   * using GPU-based back projection. The output map is visualized as `sparsemap_`.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata Calibration data containing camera parameters and configurations.
+   */
+  void TrtLightnet::makeBackProjectionGpuWithoutDensify(const int im_w, const int im_h, const Calibration calibdata)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    sparsemap_ = cv::Mat::zeros(GRID_H, GRID_W, CV_8UC3);  // Initialize the BEV map with zeros.
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(im_w) / static_cast<float>(outputW);
+	  float scale_h = static_cast<float>(im_h) / static_cast<float>(outputH);
+	  int mask_w = masks_[0].cols;
+	  int mask_h = masks_[0].rows;
+	  int bev_size = GRID_H * GRID_W * 3;
+	  int mask_size = mask_h * mask_w * 3;
+
+	  // Allocate device memory for BEV map and mask if not already allocated.
+	  if (!d_bevmap_) {
+	    d_bevmap_ = cuda_utils::make_unique<unsigned char[]>(bev_size);
+	  }
+	  if (!d_mask_) {
+	    d_mask_ = cuda_utils::make_unique<unsigned char[]>(mask_size);
+	  }
+
+	  // Copy mask data to device memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   d_mask_.get(),
+					   masks_[0].data,
+					   sizeof(unsigned char) * mask_size,
+					   cudaMemcpyHostToDevice,
+					   *stream_
+					   ));
+
+	  // Initialize the BEV map memory on the device.
+	  cudaMemset(d_bevmap_.get(), 0, bev_size * sizeof(unsigned char));
+
+	  // Perform GPU-based back projection.
+	  getBackProjectionGpu(
+			       (const float *)output_d_.at(i - 1).get(),
+			       outputW, outputH,
+			       scale_w, scale_h,
+			       calibdata,
+			       mask_w, mask_h,
+			       (unsigned char *)d_mask_.get(),
+			       masks_[0].step,
+			       d_bevmap_.get(),
+			       sparsemap_.step,
+			       0,
+			       *stream_
+			       );
+
+	  // Copy the resulting BEV map from device to host memory.
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					   sparsemap_.data,
+					   d_bevmap_.get(),
+					   sizeof(unsigned char) * bev_size,
+					   cudaMemcpyDeviceToHost,
+					   *stream_
+					   ));
+	}
+      }
+    }
+    cv::imshow("sparse-bevmap", sparsemap_);    
+  }  
+
+  /**
+   * @brief Creates a height map from the depth map data using 3D geometry transformations.
+   *
+   * This function generates a height map by converting depth data from a tensor to a color-coded
+   * visualization, where the height values are represented in a jet colormap.
+   *
+   * @param im_w The width of the input image.
+   * @param im_h The height of the input image.
+   * @param calibdata The calibration data containing intrinsic camera parameters and max distance.
+   * @return cv::Mat The generated height map as a color-coded image.
+   */  
+  cv::Mat TrtLightnet::makeHeightmap(const int im_w, const int im_h, const Calibration calibdata)
+  {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    cv::Mat mask;
+
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+      const float max_height = 80.0;
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);      
+	  
+	  float scale_w = (float)(im_w) / (float)outputW;
+	  float *buf = (float *)output_h_.at(i-1).get();
+
+	  // Process the depth map within a specific vertical range (from 4/5 to 1/3 of the height).
+	  for (int y = outputH - 1; y >= 0; y--) {	  
+	    int stride = outputW * y;
+
+	    for (int x = 0; x < outputW; x++) {
+	      float distance = buf[stride + x] * calibdata.max_distance;
+	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
+
+	      // Compute 3D coordinates from the 2D image coordinates.
+	      float src_x = x * scale_w;
+	      float y3d = ((src_x - calibdata.v0) / calibdata.fy) * distance;	      
+
+	      y3d = y3d < 0.0 ? 0.0 : y3d;
+	      y3d = y3d > max_height ? max_height : y3d;
+	      int value = y3d / (float)max_height * 255;	      
+	      mask.at<cv::Vec3b>(y, x)[0] = jet_colormap[value][0];
+	      mask.at<cv::Vec3b>(y, x)[1] = jet_colormap[value][1];
+	      mask.at<cv::Vec3b>(y, x)[2] = jet_colormap[value][2];	  
+	    }
+	  }
+	}
+      }
+    }
+    return mask;
+  }
+
+  /**
+   * @brief Blends segmentation masks with an input image using GPU acceleration.
+   *
+   * This function applies segmentation masks to an input image using GPU-based 
+   * processing. It supports resizing masks and blending them with the image using 
+   * specified weights for alpha, beta, and gamma.
+   *
+   * @param image Input/output image to which the segmentation masks are applied.
+   * @param alpha Weight of the original image in the blending process.
+   * @param beta Weight of the segmentation mask in the blending process.
+   * @param gamma Scalar added to each sum during blending.
+   */  
+  void TrtLightnet::blendSegmentationGpu(cv::Mat &image, float alpha, float beta, float gamma)
+  {
+    int mask_size = image.cols * image.rows * 3;
+    if (!d_resized_mask_) {
+      d_resized_mask_  = cuda_utils::make_unique<unsigned char[]>(mask_size);
+    }
+    if (!d_mask_) {
+      d_mask_ = cuda_utils::make_unique<unsigned char[]>(mask_size);
+    }    
+    if (!d_img_) {
+      CHECK_CUDA_ERROR(cudaMalloc((void **)&d_img_, sizeof(unsigned char) * mask_size));
+    }
+    memcpy(h_img_, image.data, mask_size * sizeof(unsigned char));
+    // Copy image data from pinned memory to device memory asynchronously
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_img_, h_img_, mask_size * sizeof(unsigned char), cudaMemcpyHostToDevice, *stream_));    
+    for (const auto &mask : masks_) {
+      if (masks_.size() == 1) {
+	resizeNearestNeighborGpu(d_resized_mask_.get(), d_mask_.get(),
+				 image.cols, image.rows, 3,
+				 masks_[0].cols, masks_[0].rows, 3, *stream_);
+      } else {     
+	cv::Mat resized;
+	cv::resize(mask, resized, cv::Size(image.cols, image.rows), 0, 0, cv::INTER_NEAREST);
+	CHECK_CUDA_ERROR(cudaMemcpyAsync(
+					 d_resized_mask_.get(),
+					 resized.data,
+					 sizeof(unsigned char) * mask_size,
+					 cudaMemcpyHostToDevice,
+					 *stream_
+					 ));
+      }      
+      addWeightedGpu(d_img_, d_img_, d_resized_mask_.get(), alpha, beta, gamma, image.cols, image.rows, 3, *stream_);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(h_img_, d_img_, sizeof(unsigned char) * mask_size, cudaMemcpyDeviceToHost, *stream_));
+      cudaStreamSynchronize(*stream_);
+      memcpy(image.data, h_img_, mask_size * sizeof(unsigned char));       
+    }
+  }
+  
+  /**
    * Retrieves the generated BEV map.
    * 
    * @return BEV map.
@@ -860,6 +1870,16 @@ namespace tensorrt_lightnet
   {
     return bevmap_;
   }
+
+  /**
+   * Retrieves the generated sparse BEV map.
+   * 
+   * @return sparse bev map.
+   */      
+  cv::Mat TrtLightnet::getSparseBevMap(void)
+  {
+    return sparsemap_;
+  }  
   
   /**
    * Retrieves the generated depth maps.
@@ -906,6 +1926,82 @@ namespace tensorrt_lightnet
 
     // Calculate and return the median value
     return dist[dist.size() / 2];
+  }
+
+  /**
+   * @brief Plots circles representing detected objects onto the BEV map.
+   *
+   * This function uses bounding box data and calibration parameters to determine
+   * the 3D positions of objects and plots corresponding circles on the BEV map.
+   *
+   * @param im_w Width of the original input image.
+   * @param im_h Height of the original input image.
+   * @param calibdata Calibration data required for mapping coordinates.
+   * @param names Vector of class names for detected objects.
+   * @param target Vector of target object classes to exclude from plotting.
+   */
+  void TrtLightnet::plotCircleIntoBevmap(const int im_w, const int im_h, const Calibration calibdata, std::vector<std::string> &names, std::vector<std::string> &target) {
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    // Loop through all bindings to find depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Identify the depth map tensor by checking the channel size and tensor name.
+      if (chan_size != chan && outputW > 1 && outputH > 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Check if the tensor name contains "lgx" and if the tensor type is 'kFLOAT'.
+	if (contain(name, "lgx") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float scale_w = static_cast<float>(outputW) / static_cast<float>(im_w);
+	  float scale_h = static_cast<float>(outputH) / static_cast<float>(im_h);
+	  float *buf = static_cast<float *>(output_h_.at(i - 1).get());
+	  float gran_h = static_cast<float>(GRID_H) / calibdata.max_distance;
+
+	  // Process each bounding box.
+	  for (const auto &b : bbox_) {
+	    bool flg = false;
+
+	    // Check if the class of the bounding box matches any target classes.
+	    for (const auto &t : target) {
+	      if (t == names[b.classId]) {
+		flg = true;
+		break;
+	      }
+	    }
+
+	    if (flg) {
+	      continue;
+	    }
+
+	    // Calculate coordinates for the BEV map.
+	    int cx = (b.box.x2 + b.box.x1) / 2 - 1;
+	    int cy = b.box.y2 - 1;
+	    int stride = outputW * static_cast<int>(cy * scale_h);
+	    float distance = buf[stride + static_cast<int>(cx * scale_w)] * calibdata.max_distance;
+	    distance = std::min(distance, calibdata.max_distance);
+
+	    float src_x = static_cast<float>(cx);
+	    float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance;
+
+	    if (x3d > 20.0) {
+	      continue;
+	    }
+
+	    x3d = (x3d + 20.0f) * GRID_W / 40.0f;
+	    int x_bev = static_cast<int>(x3d);
+	    int y_bev = static_cast<int>(GRID_H - static_cast<int>(distance * gran_h));
+
+	    // Plot a circle onto the BEV map.
+	    cv::circle(bevmap_, cv::Point(x_bev, y_bev), 8, cv::Scalar(255, 255, 255), 2);
+	  }
+	}
+      }
+    }
   }
   
   /**
@@ -967,7 +2063,7 @@ namespace tensorrt_lightnet
 	      distance = distance > calibdata.max_distance ? calibdata.max_distance : distance;
 	      float src_x = (float)lx0;
 
-	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance * 2.0;
+	      float x3d = ((src_x - calibdata.u0) / calibdata.fx) * distance;
 
 	      // Skip points that are too far in the x-direction or below the ground plane.
 	      if (x3d > 20.0) continue;
@@ -1195,7 +2291,6 @@ namespace tensorrt_lightnet
     // Formula to identify output tensors not related to bounding box detections.
     int chan_size = (4 + 1 + num_class_) * num_anchor_;
     
-
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
       const int outputW = dims.d[3];
@@ -1206,17 +2301,22 @@ namespace tensorrt_lightnet
 	std::string name = trt_common_->getIOTensorName(i);
 	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
 	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
-	  const int *buf = (int *)output_h_.at(i-1).get();
 
-	  for (int y = 0; y < outputH; y++) {
-	    int stride = outputW * y;
-	    cv::Vec3b *ptr = mask.ptr<cv::Vec3b>(y);
-
-	    for (int x = 0; x < outputW; x++) {
-	      int id = buf[stride + x];
-	      ptr[x] = argmax2bgr[id]; // Mapping class index to color.
-	    }
+	  
+	  std::vector<ucharRGB> colorMap(argmax2bgr.size());
+	  for (size_t i = 0; i < argmax2bgr.size(); ++i) {
+	    colorMap[i] = {argmax2bgr[i][0], argmax2bgr[i][1], argmax2bgr[i][2]};
 	  }
+	  if (!d_colorMap_) {
+	    d_colorMap_ = cuda_utils::make_unique<ucharRGB[]>(colorMap.size());	    
+	  }
+	  if (!d_mask_) {
+	    d_mask_ = cuda_utils::make_unique<unsigned char[]>(outputW * outputH * 3);
+	  }
+	  cudaMemcpy(d_colorMap_.get(), colorMap.data(), colorMap.size() * sizeof(ucharRGB), cudaMemcpyHostToDevice);	  
+	  mapArgmaxtoColorGpu(d_mask_.get(), (int *)output_d_.at(i-1).get(), outputW, outputH, d_colorMap_.get(), *stream_);
+	  cudaMemcpy(mask.data, d_mask_.get(), outputW * outputH * 3 * sizeof(unsigned char), cudaMemcpyDeviceToHost);	  	  
+	  cudaStreamSynchronize(*stream_);
 	  masks_.push_back(mask);
 	} else if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
 	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC3);
@@ -1891,6 +2991,43 @@ namespace tensorrt_lightnet
     }
   }
   
+  void TrtLightnet::makeTopIndex(void)
+  {
+    keypoint_.clear(); // Clear the list of keypoints before processing new data.
+
+    // Calculate the expected channel size for non-bounding box related output tensors.
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    int index = -1;
+    // Iterate over all output bindings to identify potential depth map tensors.
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      int outputW = dims.d[3];
+      int outputH = dims.d[2];
+      int chan = dims.d[1];
+
+      // Check if the tensor is a depth map based on its dimensions and channel size.
+      if (chan_size != chan && outputW == 1 && outputH == 1) {
+	std::string name = trt_common_->getIOTensorName(i);
+	nvinfer1::DataType dataType = trt_common_->getBindingDataType(i);
+
+	// Verify that the tensor name contains "lgx" and the data type is float.
+	if (contain(name, "softmax") && dataType == nvinfer1::DataType::kFLOAT) {
+	  float *buf = (float *)output_h_.at(i - 1).get(); // Access the tensor data buffer.
+	  float max_value = 0.0;
+	  for (int c = 0; c < chan; c++) {
+	    if (max_value < buf[c]) {
+	      max_value = buf[c];
+	      index = c;
+	    }	    
+	  }
+	  max_index_ = index;
+	  std::cout << "(Classification) Max Index :" << max_index_ << "@" << max_value << std::endl;
+	}
+      }
+    }
+    return;
+  }
+  
   /**
    * Returns the list of keypoints detected by the engine.
    * 
@@ -1899,6 +3036,11 @@ namespace tensorrt_lightnet
   std::vector<KeypointInfo> TrtLightnet::getKeypoints(void)
   {
     return keypoint_;
+  }
+
+  int TrtLightnet::getMaxIndex(void)
+  {
+    return max_index_;
   }
   
   /**
@@ -2058,4 +3200,156 @@ namespace tensorrt_lightnet
   void TrtLightnet::clearKeypoint() {
     keypoint_.clear();
   }
+
+  /**
+   * @brief Writes segmentation annotations to a JSON file.
+   *
+   * This function processes segmentation output from a TensorRT model,
+   * generates binary masks for each class, extracts polygon contours,
+   * and saves the annotations in JSON format.
+   *
+   * @param json_path Path to the output JSON file.
+   * @param image_name Name of the image being processed.
+   * @param width Width of the original image.
+   * @param height Height of the original image.
+   * @param colormap Vector of Colormap objects mapping class indices to names.
+   */  
+  void TrtLightnet::writeSegmentationAnnotation(const std::string json_path, const std::string image_name, int width, int height, std::vector<Colormap> colormap)
+  {
+    json::object_t imageAnnotationsOrdered;
+    imageAnnotationsOrdered["name"] = image_name;
+    imageAnnotationsOrdered["width"] = width;
+    imageAnnotationsOrdered["height"] = height;  
+    imageAnnotationsOrdered["annotations"] = json::array();    
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
+	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+	  
+	  for (int c = 1; c < (int)colormap.size(); c++) {
+	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	    cv::Mat resized;	    
+	    for (int x = 0; x < outputW; x++) {
+	      for (int y = 0; y < outputH; y++) {
+		const int id = argmax[static_cast<int>(x + outputW * y)];
+		if (id == c) {
+		  mask.at<uchar>(y, x) = 255;
+		}
+	      }	      
+	    }
+	    cv::resize(mask, resized, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
+	    std::vector<std::vector<cv::Point>> contours = get_polygons(resized);
+
+	    for (size_t i = 0; i < contours.size(); ++i) {
+	      json::object_t annotationOrdered;      
+	      annotationOrdered["type"] = "segmentation";
+	      annotationOrdered["title"] = colormap[c].name;
+	      annotationOrdered["value"] = colormap[c].name;	      
+	      json contourJson;
+	      json pointsArray = json::array();
+	      for (size_t j = 0; j < contours[i].size(); ++j) {
+		pointsArray.push_back(contours[i][j].x);
+		pointsArray.push_back(contours[i][j].y);
+	      }
+	      annotationOrdered["points"].push_back({pointsArray});
+	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);
+	    }
+	  }
+	}
+	json jsonData = json::array();  
+	jsonData.push_back(imageAnnotationsOrdered);
+	write_json_with_order(jsonData, json_path);
+      }
+    }
+  }
+
+  std::string TrtLightnet::getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap)
+  {
+    json::object_t imageAnnotationsOrdered;
+    imageAnnotationsOrdered["name"] = image_name;
+    imageAnnotationsOrdered["width"] = width;
+    imageAnnotationsOrdered["height"] = height;  
+    imageAnnotationsOrdered["annotations"] = json::array();    
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+      // Identifying tensors by channel size and name for segmentation masks.      
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
+	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+	  
+	  for (int c = 1; c < (int)colormap.size(); c++) {
+	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+	    cv::Mat resized;	    
+	    for (int x = 0; x < outputW; x++) {
+	      for (int y = 0; y < outputH; y++) {
+		const int id = argmax[static_cast<int>(x + outputW * y)];
+		if (id == c) {
+		  mask.at<uchar>(y, x) = 255;
+		}
+	      }	      
+	    }
+	    cv::resize(mask, resized, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
+	    std::vector<std::vector<cv::Point>> contours = get_polygons(resized);
+
+	    for (size_t i = 0; i < contours.size(); ++i) {
+	      json::object_t annotationOrdered;      
+	      annotationOrdered["type"] = "segmentation";
+	      annotationOrdered["title"] = colormap[c].name;
+	      annotationOrdered["value"] = colormap[c].name;	      
+	      json contourJson;
+	      json pointsArray = json::array();
+	      for (size_t j = 0; j < contours[i].size(); ++j) {
+		pointsArray.push_back(contours[i][j].x);
+		pointsArray.push_back(contours[i][j].y);
+	      }
+	      annotationOrdered["points"].push_back({pointsArray});
+	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);
+	    }
+	  }
+	}
+
+      }
+    }
+    std::string json_string = json(imageAnnotationsOrdered).dump();    
+    return json_string;
+  }  
+
+  /**
+   * @brief Retrieves the input size of the TensorRT model.
+   *
+   * This function extracts the input dimensions of the TensorRT model's first binding tensor.
+   *
+   * @param batch Pointer to store batch size.
+   * @param chan Pointer to store the number of channels.
+   * @param height Pointer to store the height.
+   * @param width Pointer to store the width.
+   */  
+  void TrtLightnet::getInputSize(int *batch, int *chan, int *height, int *width) {
+    if (!trt_common_) {
+      std::cerr << "Error: trt_common_ is not initialized." << std::endl;
+      return;
+    }
+    auto input_dims = trt_common_->getBindingDimensions(0);
+    *batch = static_cast<float>(input_dims.d[0]);
+    *chan = static_cast<float>(input_dims.d[1]);
+    *height = static_cast<float>(input_dims.d[2]);
+    *width = static_cast<float>(input_dims.d[3]);
+  }
+  
 }  // namespace tensorrt_lightnet
+
