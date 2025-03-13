@@ -8,5 +8,6 @@ Please refer to [this page](https://github.com/hdwlab/trt-lightnet) for the oper
 You can install pylightnet using the following command:
 
 ```bash
+$ pip install -U setuptools pip
 $ pip install .
 ```
