@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pkg_resources
+import os
 import cv2
 import numpy as np
 import ctypes
@@ -143,8 +145,19 @@ def load_segmentation_data(csv_file_path):
 # Wrapper for TrtLightnet
 class TrtLightnet:
     def __init__(self, model_config, inference_config, build_config, subnet_model_config=None, subnet_inference_config=None):
-        # Load the shared library
-        self.lib = ctypes.CDLL('liblightnetinfer.so')
+        # Load dependent library libcnpy.so as a global library
+        libcnpy_path = pkg_resources.resource_filename(__name__, os.path.join("libcnpy.so"))
+        try:
+            ctypes.CDLL(libcnpy_path, mode=ctypes.RTLD_GLOBAL)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load dependent library libcnpy.so from {libcnpy_path}") from e
+
+        # Load the main library liblightnetinfer.so
+        lib_path = pkg_resources.resource_filename(__name__, "liblightnetinfer.so")
+        try:
+            self.lib = ctypes.CDLL(lib_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load library liblightnetinfer.so from {lib_path}") from e
 
         # Define argument and return types
         self.lib.create_trt_lightnet.argtypes = [

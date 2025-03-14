@@ -1,0 +1,6 @@
+liblightnetinfer.so
+lib/cnpy/
+# Python related
+__pycache__/
+build/
+*.egg-info/

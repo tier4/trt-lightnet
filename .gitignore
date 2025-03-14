@@ -23,3 +23,5 @@ api/
 .ipynb_checkpoints
 *.idea
 __pycache__
+.venv
+*.so
