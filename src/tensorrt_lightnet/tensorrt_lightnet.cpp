@@ -57,6 +57,13 @@ SOFTWARE.
 #include <filesystem> // Use standardized filesystem library
 #include <cassert>
 #include <nlohmann/json.hpp>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>  
+#include <sstream>
+#include <iomanip>
+#include <omp.h>
+
 using json = nlohmann::json;
 extern const unsigned char jet_colormap[256][3];
 extern const unsigned char magma_colormap[256][3];
@@ -83,7 +90,11 @@ calculateAngle(double x1, double y1, double x2, double y2) {
 std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
 {  
   std::vector<std::vector<cv::Point>> contours;  
-  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  //cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  // 🚀 メモリ効率の最適化
+  contours.reserve(1000);  // 適切な予測値に設定 (データ量に応じて調整)
+  // 🔄 CHAIN_APPROX_SIMPLE を使用してデータ量削減
+  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   return contours;
 }
 
@@ -338,7 +349,10 @@ namespace tensorrt_lightnet
 
     trt_common_->setup();
     if (!trt_common_->isInitialized()) {
-      throw std::runtime_error("TensorRT engine initialization failed.");
+      //throw std::runtime_error("TensorRT engine initialization failed.");
+      std::cerr << ("TensorRT engine initialization failed.") << std::endl;
+      trt_common_ = nullptr;
+      return;
     }
 
     // Initialize class members
@@ -3021,7 +3035,7 @@ namespace tensorrt_lightnet
 	    }	    
 	  }
 	  max_index_ = index;
-	  std::cout << "(Classification) Max Index :" << max_index_ << "@" << max_value << std::endl;
+	  //std::cout << "(Classification) Max Index :" << max_index_ << "@" << max_value << std::endl;
 	}
       }
     }
@@ -3270,9 +3284,10 @@ namespace tensorrt_lightnet
       }
     }
   }
-
+  /*
   std::string TrtLightnet::getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap)
   {
+      
     json::object_t imageAnnotationsOrdered;
     imageAnnotationsOrdered["name"] = image_name;
     imageAnnotationsOrdered["width"] = width;
@@ -3317,18 +3332,105 @@ namespace tensorrt_lightnet
 		pointsArray.push_back(contours[i][j].x);
 		pointsArray.push_back(contours[i][j].y);
 	      }
-	      annotationOrdered["points"].push_back({pointsArray});
-	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);
+	      annotationOrdered["points"].push_back({pointsArray});	      
+	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);	      
 	    }
 	  }
 	}
 
       }
     }
-    std::string json_string = json(imageAnnotationsOrdered).dump();    
+    std::string json_string = json(imageAnnotationsOrdered).dump();
+
     return json_string;
   }  
+  */  
+ 
+  std::string TrtLightnet::getSegmentationAnnotationStr(
+							const std::string image_name, int width, int height, std::vector<Colormap> colormap)
+  {
+    json::object_t imageAnnotationsOrdered;
+    imageAnnotationsOrdered["name"] = image_name;
+    imageAnnotationsOrdered["width"] = width;
+    imageAnnotationsOrdered["height"] = height;
+    imageAnnotationsOrdered["annotations"] = json::array();
+    int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
+    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+      const auto dims = trt_common_->getBindingDimensions(i);
+      const int outputW = dims.d[3];
+      const int outputH = dims.d[2];
+      const int chan = dims.d[1];
+
+      if (chan_size != chan) {
+	std::string name = trt_common_->getIOTensorName(i);
+	if (contain(name, "argmax")) {
+	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+
+	  std::vector<std::vector<json::object_t>> annotations(colormap.size());
+
+	  // スケーリング倍率計算 (リサイズ補正用)
+	  const double scaleX = static_cast<double>(width) / outputW;
+	  const double scaleY = static_cast<double>(height) / outputH;
+
+	  // 並列化: OpenMP を活用し、並列数4に制限
+#pragma omp parallel for num_threads(2)
+	  for (int c = 1; c < (int)colormap.size(); c++) {
+	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+
+	    for (int y = 0; y < outputH; y++) {
+	      uchar* row = mask.ptr<uchar>(y);  // 1行のポインタを取得
+	      for (int x = 0; x < outputW; x++) {
+		const int id = argmax[static_cast<int>(x + outputW * y)];
+		if (id == c) {
+		  row[x] = 255;
+		}
+	      }
+	    }
+	    
+	    std::vector<std::vector<cv::Point>> contours = get_polygons(mask);
+
+	    std::vector<json::object_t> thread_annotations;
+
+	    for (size_t i = 0; i < contours.size(); ++i) {
+	      json::object_t annotationOrdered;
+	      annotationOrdered["type"] = "segmentation";
+	      annotationOrdered["title"] = colormap[c].name;
+	      annotationOrdered["value"] = colormap[c].name;
+
+	      json pointsArray = json::array();
+	      for (size_t j = 0; j < contours[i].size(); ++j) {
+		// 🔄 座標のリサイズ補正
+		int scaled_x = static_cast<int>(contours[i][j].x * scaleX);
+		int scaled_y = static_cast<int>(contours[i][j].y * scaleY);
+		pointsArray.push_back(scaled_x);
+		pointsArray.push_back(scaled_y);
+	      }
+	      annotationOrdered["points"].push_back({pointsArray});
+
+	      thread_annotations.push_back(annotationOrdered);
+	    }
+
+	    annotations[c] = std::move(thread_annotations);
+	  }
+
+	  // 🚀 アノテーションデータを一括コピー
+	  for (const auto &ann_set : annotations) {
+	    for (const auto &annotation : ann_set) {
+	      if (!annotation.empty()) {
+		imageAnnotationsOrdered["annotations"].push_back(annotation);
+	      }
+	    }
+	  }
+	}
+      }
+    }
+
+    std::string json_string = json(imageAnnotationsOrdered).dump();
+    return json_string;
+  }
+  
+  
   /**
    * @brief Retrieves the input size of the TensorRT model.
    *

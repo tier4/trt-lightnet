@@ -1037,8 +1037,8 @@ void inferLightNetPipeline(
   }
  
   // Draw visualizations if not suppressed
-  if (1) {
-    //if (!visualization_config.dont_show) {
+  //if (1) {
+  if (!visualization_config.dont_show) {
     if (profile_verbose()) {
       start = std::chrono::high_resolution_clock::now();
     }          

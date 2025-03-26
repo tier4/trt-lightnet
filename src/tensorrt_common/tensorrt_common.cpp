@@ -255,7 +255,8 @@ void TrtCommon::setup()
       std::cout << "Loading... " << cache_engine_path << std::endl;
      is_loadable_engine  = loadEngine(cache_engine_path);
       if (!is_loadable_engine) {
-	std::cout << "Rebuild... " << cache_engine_path << std::endl;
+	return;
+	//std::cout << "Rebuild... " << cache_engine_path << std::endl;
       }
     } else {
       std::cout << "Building... " << cache_engine_path << std::endl;

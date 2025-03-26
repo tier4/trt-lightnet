@@ -302,7 +302,7 @@ class TrtLightnet:
             img_data = cropped.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
             self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, False)
             top_index = self.lib.get_top_index(self.instance)
-            print("Infer " , count, ":", sub_names[top_index],  bbox)
+
             bbox["sub_name"] = sub_names[top_index]
             count = count+1
             

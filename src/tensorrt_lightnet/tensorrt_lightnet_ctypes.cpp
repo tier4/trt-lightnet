@@ -354,12 +354,17 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
 
     tensorrt_common::BuildConfig buildConfig;
     copy_to_cpp_build_config(buildConfigC, &buildConfig);
-
+    
     auto instance = new std::shared_ptr<tensorrt_lightnet::TrtLightnet>(
         std::make_shared<tensorrt_lightnet::TrtLightnet>(modelConfig, inferenceConfig, buildConfig, "magma"));
-
+    
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
 
+    if (lightnet->trt_common_ == nullptr) {
+      std::cout << "Fail lightnet->trt_common_  " << lightnet->trt_common_ <<  std::endl;
+      return nullptr;
+    }
+    
     // Set model names
     std::vector<std::string> names;
     for (int i = 0; i < modelConfigC->num_names; ++i) {
@@ -782,7 +787,6 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
         subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
         actual_batch_size++;
     }
-
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
@@ -940,6 +944,6 @@ void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int
             }
         }
     }
-}
+}  
 }
 
