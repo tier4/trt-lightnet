@@ -760,6 +760,10 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
         cropped.push_back(image(roi));
     }
 
+    if (!cropped.size()) {
+      return;
+    }
+    
     subnet->preprocess(cropped);
     subnet->doInference(static_cast<int>(cropped.size()));
 
