@@ -327,6 +327,7 @@ class TrtLightnet:
                 "subClassId" : bbox.subClassId,
                 "sin" : bbox.sin,
                 "cos" : bbox.cos,
+                "id" : i,
             })
         return bboxes
 
