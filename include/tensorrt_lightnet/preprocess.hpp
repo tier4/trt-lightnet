@@ -212,3 +212,7 @@ extern void addWeightedGpu(unsigned char *output, unsigned char *src1,  unsigned
 
 extern void resizeNearestNeighborGpu(unsigned char *dst, unsigned char*src, int d_w, int d_h, int d_c,
 				     int s_w, int s_h, int s_c, cudaStream_t stream);
+
+
+extern void computeEntropyMapGpu(const float* buf, float* entropy_maps,
+				 int chan, int height, int width, cudaStream_t stream);
