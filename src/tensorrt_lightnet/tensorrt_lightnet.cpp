@@ -394,6 +394,11 @@ namespace tensorrt_lightnet
 	  } else {
 	    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_depth_colormap_.get(), jet_colormap, sizeof(unsigned char) * 256 * 3, cudaMemcpyHostToDevice, *stream_));
 	  }
+	} else 	if (contain(name, "softmax")) {
+	  int src_size = outputH * outputW * chan;
+	  h_entropy_ = cuda_utils::make_unique_host<float[]>(src_size, cudaHostAllocPortable);	  
+	  //CHECK_CUDA_ERROR(cudaMallocHost((void **)&h_entropy_, sizeof(float) * src_size));
+	  d_entropy_ = cuda_utils::make_unique<float[]>(src_size);
 	}
       }
     }
@@ -2364,30 +2369,56 @@ namespace tensorrt_lightnet
       if (chan_size != chan) {
 	std::string name = trt_common_->getIOTensorName(i);
 	if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
-	  const float *buf = (float *)output_h_.at(i-1).get();
 	  cv::Mat vis = cv::Mat::zeros(outputH, outputW, CV_8UC1);
 	  cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);	  	  
+	  std::vector<cv::Mat> entropy_maps(chan);
 	  std::vector<float> entropy(chan, 0.0f);
+	  for (int c = 0; c < chan; ++c) {
+	    entropy_maps[c] = cv::Mat::zeros(outputH, outputW, CV_32FC1);
+	  }
 
+	  std::chrono::high_resolution_clock::time_point start, end;
+	  start = std::chrono::high_resolution_clock::now();
+
+	  computeEntropyMapGpu((float *)output_d_.at(i-1).get(), d_entropy_.get(),
+			       chan, outputH, outputW, *stream_);
+
+	  CHECK_CUDA_ERROR(cudaMemcpyAsync(h_entropy_.get(), d_entropy_.get(), outputW * outputH * chan * sizeof(float), cudaMemcpyDeviceToHost, *stream_));
+	  cudaStreamSynchronize(*stream_); 
+
+	  end = std::chrono::high_resolution_clock::now();
+	  std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	  std::cout << "##Entropuy: " << duration.count() << " ms " << std::endl;
+
+	  start = std::chrono::high_resolution_clock::now();
+	  //#pragma omp parallel for schedule(static, 2a) num_threads(2)    	  
 	  for (int y = 0; y < outputH; y++) {
 	    for (int x = 0; x < outputW; x++) {
-	      for (int c = 0; c < chan; c++) {
-		float p = buf[c * outputH * outputW + y * outputW + x];		
-		float ent = -p * log(p + 1e-10);
+	      for (int c = 0; c < chan; c++) {	  
+		//float ent = entropy_maps[c].at<float>(y, x);
+		int index = c * outputH * outputW + outputW * y + x;
+		float ent = h_entropy_[index] ;				
 		entropy[c] += ent;
-		vis.at<unsigned char>(y, x) += (unsigned char)(255 * ent);
+		//vis.at<unsigned char>(y, x) += (unsigned char)(255 * ent)/chan;		
+		vis.at<unsigned char>(y, x) = (vis.at<unsigned char>(y, x) < (unsigned char)(255 * ent)) ? (unsigned char)(255 * ent) : vis.at<unsigned char>(y, x);		
 	      }
 	    }
 	  }
-
-	  for (float &ent : entropy) {
-	    ent /= (outputH * outputW);
+	  end = std::chrono::high_resolution_clock::now();
+	  duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	  std::cout << "##visalize: " << duration.count() << " ms " << std::endl;
+	  
+	  for (int c = 0; c < chan; c++) {
+	    entropy[c] /= (outputH * outputW);
+	  }	  
+	  for (int c = 0; c < chan; c++) {	    
+	    std::cout << "Entropy (" << c  << ") " << entropy[c] <<std::endl;
 	  }
-
+	  
 	  entropies_.push_back(entropy);
 	  for (int y = 0; y < outputH; y++) {
 	    for (int x = 0; x < outputW; x++) {
-	      const auto &color = jet_colormap[255 - vis.at<unsigned char>(y, x)];
+	      const auto &color = jet_colormap[vis.at<unsigned char>(y, x)];	      
 	      ent_map.at<cv::Vec3b>(y, x)[0] = color[0];
 	      ent_map.at<cv::Vec3b>(y, x)[1] = color[1];
 	      ent_map.at<cv::Vec3b>(y, x)[2] = color[2];
@@ -3369,17 +3400,15 @@ namespace tensorrt_lightnet
 
 	  std::vector<std::vector<json::object_t>> annotations(colormap.size());
 
-	  // スケーリング倍率計算 (リサイズ補正用)
 	  const double scaleX = static_cast<double>(width) / outputW;
 	  const double scaleY = static_cast<double>(height) / outputH;
 
-	  // 並列化: OpenMP を活用し、並列数4に制限
 #pragma omp parallel for num_threads(2)
 	  for (int c = 1; c < (int)colormap.size(); c++) {
 	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
 
 	    for (int y = 0; y < outputH; y++) {
-	      uchar* row = mask.ptr<uchar>(y);  // 1行のポインタを取得
+	      uchar* row = mask.ptr<uchar>(y); 
 	      for (int x = 0; x < outputW; x++) {
 		const int id = argmax[static_cast<int>(x + outputW * y)];
 		if (id == c) {
@@ -3400,7 +3429,6 @@ namespace tensorrt_lightnet
 
 	      json pointsArray = json::array();
 	      for (size_t j = 0; j < contours[i].size(); ++j) {
-		// 🔄 座標のリサイズ補正
 		int scaled_x = static_cast<int>(contours[i][j].x * scaleX);
 		int scaled_y = static_cast<int>(contours[i][j].y * scaleY);
 		pointsArray.push_back(scaled_x);
@@ -3414,7 +3442,6 @@ namespace tensorrt_lightnet
 	    annotations[c] = std::move(thread_annotations);
 	  }
 
-	  // 🚀 アノテーションデータを一括コピー
 	  for (const auto &ann_set : annotations) {
 	    for (const auto &annotation : ann_set) {
 	      if (!annotation.empty()) {

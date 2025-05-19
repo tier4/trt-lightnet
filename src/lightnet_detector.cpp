@@ -814,11 +814,12 @@ saveLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::M
     }
   }
   if (masks.size() && depthmaps.size()) {
-    /*
+    
     fs::path p = fs::path(save_path) / "bevmap";
     fs::create_directory(p);
     cv::Mat bevmap = trt_lightnet->getBevMap();
     saveImage(bevmap, p.string(), png_name);
+    /*
     p = fs::path(save_path) / "occupancyGrid";
     fs::create_directory(p);
     cv::Mat occupancy = trt_lightnet->getOccupancyGrid();
@@ -1008,7 +1009,11 @@ void inferLightNetPipeline(
 
   // Calculate entropy and save results if required
   if (get_calc_entropy_flg()) {
+    start = std::chrono::high_resolution_clock::now();
     trt_lightnet->calcEntropyFromSoftmax();
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "##Uncertainty: " << duration.count() << " ms " << std::endl;    
     if (path_config.save_path != "not-specified") {
       fs::path dstPath(path_config.save_path);
       if (!sensor_name.empty()) {
@@ -1159,7 +1164,8 @@ main(int argc, char* argv[])
     .scale = 1.0, // Assuming a fixed value or obtained similarly.
     .calibration_images = get_calibration_images(),
     .calibration_type = get_calib_type(),    
-    .batch_config = {1, get_batch_size()/2, get_batch_size()},
+    //.batch_config = {1, get_batch_size()/2, get_batch_size()},
+    .batch_config = {1, 1, 1},    
     .workspace_size = (1 << 30)
   };
   
@@ -1233,6 +1239,7 @@ main(int argc, char* argv[])
 	//use multiple dlas [DLA0 and DLA1]
 	build_config.dla_core_id = (int)w/2;
       }
+      inference_config.batch_config = {1, get_batch_size()/2, get_batch_size()};      
       subnet_trt_lightnets.push_back(
 				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config, get_depth_format()));
     }
@@ -1352,7 +1359,7 @@ main(int argc, char* argv[])
       sout << std::setfill('0') << std::setw(6) << count;	  
       std::string name = "frame_" + sout.str() + ".jpg";	              
       inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
-      
+
       if (!visualization_config.dont_show) {
 	if (image.rows > 1280 && image.cols > 1920) {
 	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);

@@ -56,6 +56,7 @@ struct BBoxInfoC {
   int num_keypoints; ///< Number of keypoints.
   char attribute[MAX_STRING_SIZE]; ///< Attribute information.
   float attribute_prob; ///< Probability of the attribute.
+  int batch_index;  
 };
 
 /**
@@ -669,6 +670,75 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     return annotation_str.c_str();
   }
 
+  void infer_batches(
+    void* instance,
+    unsigned char** imgs,
+    int* heights,
+    int* widths,
+    int* channels,
+    int batch_size,
+    BBoxInfoC** out_bboxes,
+    int* out_bbox_count
+		     )
+  {		     
+    std::vector<cv::Mat> images;
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    for (int i = 0; i < batch_size; ++i) {
+      int h = heights[i];
+      int w = widths[i];
+      int c = channels[i];
+
+      cv::Mat img;
+      if (c == 1) {
+	img = cv::Mat(h, w, CV_8UC1, imgs[i]);
+      } else if (c == 3) {
+	img = cv::Mat(h, w, CV_8UC3, imgs[i]);
+      } else {
+	continue;
+      }
+      images.push_back(img);
+    }
+
+    if (images.empty()) {
+        *out_bboxes = nullptr;
+        *out_bbox_count = 0;
+        return;
+    }    
+    
+    lightnet->preprocess(images);
+    lightnet->doInference(static_cast<int>(images.size()));
+
+
+    std::vector<BBoxInfoC> all_results;
+
+    for (int i = 0; i < static_cast<int>(images.size()); ++i) {
+        auto bboxes = lightnet->getBbox(images[i].rows, images[i].cols, i);
+        for (const auto& b : bboxes) {
+            BBoxInfoC out{};
+            out.box = { b.box.x1, b.box.y1, b.box.x2, b.box.y2 };
+            out.label = b.label;
+            out.classId = b.classId;
+            out.prob = b.prob;
+            out.isHierarchical = b.isHierarchical;
+            out.subClassId = b.subClassId;
+            out.sin = b.sin;
+            out.cos = b.cos;
+            //out.num_keypoints = static_cast<int>(b.keypoints.size());
+            out.batch_index = i;
+            //std::strncpy(out.attribute, b.attribute.c_str(), MAX_STRING_SIZE - 1);
+            //out.attribute[MAX_STRING_SIZE - 1] = '\0';
+            out.attribute_prob = 0.0;
+	    //out.keypoints = nullptr;
+            all_results.push_back(out);
+        }
+    }
+
+    // Copy results to C heap for Python access
+    int total = all_results.size();
+    *out_bbox_count = total;
+    *out_bboxes = static_cast<BBoxInfoC*>(malloc(sizeof(BBoxInfoC) * total));
+    std::memcpy(*out_bboxes, all_results.data(), sizeof(BBoxInfoC) * total); 
+}  
 
 /**
  * @brief Perform inference on a subset of bounding boxes detected by the main network using a subnet.
@@ -794,6 +864,9 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
+
+
+  
 
   
   /**

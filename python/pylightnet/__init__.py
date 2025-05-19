@@ -20,6 +20,7 @@ import ctypes
 import csv
 import json
 import re
+import copy
 __all__ = ["pylightnet"]
 
 # Define the C-compatible ModelConfigC structure
@@ -93,7 +94,8 @@ class BBoxInfoC(ctypes.Structure):
         ("keypoints", ctypes.POINTER(ctypes.c_void_p)),
         ("num_keypoints", ctypes.c_int),
         ("attribute", ctypes.c_char * 256),
-        ("attribute_prob", ctypes.c_float),        
+        ("attribute_prob", ctypes.c_float),
+        ("batch_index", ctypes.c_int),                         # Index in batch
     ]
 
 class ColormapC(ctypes.Structure):
@@ -141,7 +143,41 @@ def load_segmentation_data(csv_file_path):
                 "dynamic": row["dynamic"].lower() == "true"  # Convert string to boolean
             }
     return data_dict
-        
+
+def compute_iou(box1, box2):
+    """Compute IoU between two boxes: [x1, y1, x2, y2]"""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+
+    inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = max(0, box1[2] - box1[0]) * max(0, box1[3] - box1[1])
+    area2 = max(0, box2[2] - box2[0]) * max(0, box2[3] - box2[1])
+
+    union = area1 + area2 - inter_area
+    return inter_area / union if union > 0 else 0.0
+
+def nms_bboxes(results, iou_thresh=0.5):
+    """Apply NMS to a list of result dicts with 'box' and 'prob'."""
+    if not results:
+        return []
+
+    # Sort by confidence
+    sorted_results = sorted(results, key=lambda x: x["prob"], reverse=True)
+    keep = []
+
+    while sorted_results:
+        best = sorted_results.pop(0)
+        keep.append(best)
+
+        sorted_results = [
+            r for r in sorted_results
+            if compute_iou(best["box"], r["box"]) < iou_thresh
+        ]
+
+    return keep
+
 # Wrapper for TrtLightnet
 class TrtLightnet:
     def __init__(self, model_config, inference_config, build_config, subnet_model_config=None, subnet_inference_config=None):
@@ -185,6 +221,19 @@ class TrtLightnet:
         ]
         self.lib.infer_lightnet_wrapper.restype = None
 
+        self.lib.infer_batches.argtypes = [
+            ctypes.c_void_p,                                       # void* instance
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),        # unsigned char** imgs
+            ctypes.POINTER(ctypes.c_int),                          # int* heights
+            ctypes.POINTER(ctypes.c_int),                          # int* widths
+            ctypes.POINTER(ctypes.c_int),                          # int* channels
+            ctypes.c_int,                                          # int batch_size
+            ctypes.POINTER(ctypes.POINTER(BBoxInfoC)),             # BBoxInfoC** out_bboxes
+            ctypes.POINTER(ctypes.c_int)                           # int* out_bbox_count
+        ]
+        self.lib.infer_batches.restype = None
+        
+        
         self.lib.infer_multi_stage_lightnet_wrapper.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,            
@@ -281,6 +330,89 @@ class TrtLightnet:
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, cuda)
 
+        
+    def infer_subnet_batches_from_bboxes(self, bboxes, image, all_labels, target_labels, subnet_labels, batch_size, min_crop_size, debug=False):
+        """Filter, classify, and annotate bounding boxes on the input image."""
+
+        valid_bboxes = []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox["box"]
+            width, height = x2 - x1, y2 - y1
+            if width < min_crop_size or height < min_crop_size:
+                continue
+
+            label_id = bbox["label"]
+            class_name = all_labels[label_id] if label_id < len(all_labels) else "Unknown"
+            if class_name in target_labels:
+                valid_bboxes.append(bbox)
+
+        results = []
+
+        for i in range(0, len(valid_bboxes), batch_size):
+            current_batch = valid_bboxes[i:i + batch_size]
+
+            cropped_imgs = [
+                image[int(y1):int(y2), int(x1):int(x2)].copy()
+                for x1, y1, x2, y2 in (bbox["box"] for bbox in current_batch)
+            ]
+
+            num = len(cropped_imgs)
+            img_ptrs = (ctypes.POINTER(ctypes.c_ubyte) * num)()
+            heights = (ctypes.c_int * num)()
+            widths = (ctypes.c_int * num)()
+            channels = (ctypes.c_int * num)()
+
+            for idx, img in enumerate(cropped_imgs):
+                img = np.ascontiguousarray(img, dtype=np.uint8)
+                img_ptrs[idx] = img.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+                heights[idx] = img.shape[0]
+                widths[idx] = img.shape[1]
+                channels[idx] = img.shape[2] if img.ndim == 3 else 1
+
+            bbox_ptr = ctypes.POINTER(BBoxInfoC)()
+            bbox_count = ctypes.c_int()
+
+            self.lib.infer_batches(
+                self.sub_instance,
+                img_ptrs,
+                heights,
+                widths,
+                channels,
+                num,
+                ctypes.byref(bbox_ptr),
+                ctypes.byref(bbox_count)
+            )
+
+            for j in range(bbox_count.value):
+                b = bbox_ptr[j]
+                orig_box = current_batch[b.batch_index]["box"]
+                x_offset, y_offset = orig_box[0], orig_box[1]
+
+                result = {
+                    "box": [
+                        b.box.x1 + x_offset,
+                        b.box.y1 + y_offset,
+                        b.box.x2 + x_offset,
+                        b.box.y2 + y_offset,
+                    ],
+                    "label": b.label,
+                    "classId": b.classId,
+                    "prob": b.prob,
+                    "attribute": b.attribute.decode("utf-8", errors="ignore"),
+                    "attribute_prob": b.attribute_prob,
+                }
+                results.append(result)
+
+            # Free memory
+            libc = ctypes.CDLL("libc.so.6")
+            libc.free.argtypes = [ctypes.c_void_p]
+            libc.free(bbox_ptr)
+            
+        filtered_results = nms_bboxes(results, iou_thresh=0.45)
+        return filtered_results
+    
+            
+        
     def infer_multi_stage(self, image, target_list, cuda=False):
         if image.dtype != np.uint8:
             raise ValueError("Image must be of type np.uint8")
@@ -595,6 +727,7 @@ def create_lightnet_from_config(config_dict):
     else :
         return TrtLightnet(model_config, inference_config, build_config)    
 
+    
 def parse_subnet_model_config(config_dict):
     """Parse model configuration and store it in a ModelConfigC object."""
     model_config = ModelConfigC()
@@ -628,3 +761,62 @@ def parse_subnet_model_config(config_dict):
     model_config.detection_colormap_size = len(detection_colormap)
 
     return model_config
+
+def merge_bbox(bboxes1, bboxes2, names1, names2):
+    """
+    Merge bboxes2 into bboxes1, matching label names via names1/names2 and applying NMS.
+
+    Args:
+        bboxes1 (list): List of bbox dicts (target list to be updated)
+        bboxes2 (list): List of bbox dicts to be merged
+        names1 (list): List of class names for bboxes1 (index = label)
+        names2 (list): List of class names for bboxes2 (index = label)
+
+    Returns:
+        list: Merged and NMS-applied bbox list
+    """
+    for bb2 in bboxes2:
+        label = bb2["label"]
+        name = names2[label]
+
+        # Try to find matching name in names1
+        try:
+            index = names1.index(name)
+            new_bb = copy.deepcopy(bb2)
+            new_bb["label"] = index
+            bboxes1.append(new_bb)
+        except ValueError:
+            continue  # name not found in names1
+
+    ret = nms_bboxes(bboxes1, iou_thresh=0.45)
+    return ret
+
+def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
+    """
+    Apply blur to regions labeled as LICENSE_PLATE or HUMAN_HEAD.
+
+    Args:
+        image (np.ndarray): The image to apply blur on (will be modified in-place).
+        bboxes (list): List of dicts with "box" and "label".
+        label_names (list): List of label names (label index to string).
+        blur_kernel (tuple): Kernel size for blurring.
+
+    Returns:
+        np.ndarray: The image with blurred regions.
+    """
+    blurred_image = image.copy()
+
+    for bbox in bboxes:
+        label_id = bbox["label"]
+        if label_id >= len(label_names):
+            continue
+                                                
+        label_name = label_names[label_id]
+        if label_name in ["LICENSE_PLATE", "HUMAN_HEAD"]:
+            x1, y1, x2, y2 = map(int, bbox["box"])
+            roi = blurred_image[y1:y2, x1:x2]
+            if roi.size > 0:
+                blurred_roi = cv2.GaussianBlur(roi, blur_kernel, 0)
+                blurred_image[y1:y2, x1:x2] = blurred_roi
+
+    return blurred_image
