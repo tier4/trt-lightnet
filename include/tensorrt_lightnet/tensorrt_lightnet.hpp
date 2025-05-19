@@ -100,14 +100,14 @@ struct Calibration {
   float max_distance;
 };
 
-//#define GRID_H 640
-//#define GRID_W 480
+#define GRID_H 640
+#define GRID_W 480
 
 //#define GRID_H 640
 //#define GRID_W 640
 
-#define GRID_H 1280
-#define GRID_W 960
+//#define GRID_H 1280
+//#define GRID_W 960
 
 /**
  * Configuration settings related to the model being used for inference.
@@ -1168,7 +1168,10 @@ public:
    * in the BEV. It is used to analyze and visualize the spatial layout
    * of the environment.
    */  
-  cv::Mat occupancy_;    
+  cv::Mat occupancy_;
+
+  CudaUniquePtr<float[]> d_entropy_;
+  CudaUniquePtrHost<float[]> h_entropy_;  
 };
 
 }  // namespace tensorrt_lightnet

@@ -378,3 +378,29 @@ void addWeightedGpu(unsigned char *output, unsigned char *src1,  unsigned char *
 							    width, height, channel);
 
 }
+
+
+extern "C" __global__ void computeEntropyMapKernel(
+					       const float* buf, float* entropy_maps,
+					       int chan, int height, int width)
+{
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int c = blockIdx.z * blockDim.z + threadIdx.z;
+
+  if (x >= width || y >= height || c >= chan) return;
+
+  int index = c * height * width + y * width + x;
+  float p = buf[index];
+  float ent = -p * logf(p + 1e-10f);
+  entropy_maps[index] = ent;
+}
+
+void computeEntropyMapGpu(const float* buf, float* entropy_maps,
+			 int chan, int height, int width, cudaStream_t stream)
+{
+  dim3 block(8, 8, 4);
+  dim3 grid((width + 7)/8, (height + 7)/8, (chan + 3)/4);
+  computeEntropyMapKernel<<<grid, block, 0, stream>>>(buf, entropy_maps,
+								  chan, height, width);  
+}
