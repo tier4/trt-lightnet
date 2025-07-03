@@ -203,6 +203,11 @@ class TrtLightnet:
         ]
         self.lib.create_trt_lightnet.restype = ctypes.c_void_p
 
+        self.lib.destroy_trt_lightnet.argtypes = [
+            ctypes.c_void_p,
+        ]
+        self.lib.destroy_trt_lightnet.restype = None
+        
         self.lib.trt_lightnet_get_input_size.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_int),
@@ -210,6 +215,7 @@ class TrtLightnet:
             ctypes.POINTER(ctypes.c_int),
             ctypes.POINTER(ctypes.c_int),
         ]
+        
         self.lib.trt_lightnet_get_input_size.restype = None
 
         self.lib.infer_lightnet_wrapper.argtypes = [
@@ -330,6 +336,9 @@ class TrtLightnet:
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, cuda)
 
+
+    def destroy(self) :
+        self.lib.destroy_trt_lightnet(self.instance)
         
     def infer_subnet_batches_from_bboxes(self, bboxes, image, all_labels, target_labels, subnet_labels, batch_size, min_crop_size, debug=False):
         """Filter, classify, and annotate bounding boxes on the input image."""
