@@ -21,13 +21,18 @@ import subprocess
 from setuptools import Command, find_packages, setup
 from setuptools.command.build import build
 
+skip_ext = os.environ.get("SKIP_EXT", "0") == "1"
+
 
 class CustomBuild(build):
     description = "Custom build command"
 
     def run(self):
-        self.run_command("build_lightnet_infer")
-        build.run(self)
+        if not skip_ext:
+            self.run_command("build_lightnet_infer")
+            build.run(self)
+        else:
+            print("SKIP_EXT=1 detected: skipping build_lightnet_infer")
 
 
 class BuildLightnetInfer(Command):
@@ -140,6 +145,12 @@ setup(
         "opencv-python",
         "numpy",
     ],
+    extras_require={
+        "dev": [
+            "ruff",
+            "pytest",
+        ],
+    },
     cmdclass={
         "build": CustomBuild,
         "build_lightnet_infer": BuildLightnetInfer,
