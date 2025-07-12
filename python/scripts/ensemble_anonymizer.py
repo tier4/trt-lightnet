@@ -24,10 +24,26 @@ import pylightnet
 
 def parse_args():
     """Parse command-line arguments for video path and config files."""
-    parser = argparse.ArgumentParser(description="Run multi-stage inference on a video using PyLightNet.")
-    parser.add_argument("-v", "--video", help="Path to the input video file", required=True, type=str)
-    parser.add_argument("-f1", "--flagfile1", help="Path to the primary config file for PyLightNet", required=True, type=str)
-    parser.add_argument("-f2", "--flagfile2", help="Path to the secondary config file for PyLightNet", required=True, type=str)
+    parser = argparse.ArgumentParser(
+        description="Run multi-stage inference on a video using PyLightNet."
+    )
+    parser.add_argument(
+        "-v", "--video", help="Path to the input video file", required=True, type=str
+    )
+    parser.add_argument(
+        "-f1",
+        "--flagfile1",
+        help="Path to the primary config file for PyLightNet",
+        required=True,
+        type=str,
+    )
+    parser.add_argument(
+        "-f2",
+        "--flagfile2",
+        help="Path to the secondary config file for PyLightNet",
+        required=True,
+        type=str,
+    )
     return parser.parse_args()
 
 
@@ -85,12 +101,18 @@ def demo(video_path, config_path1, config_path2):
         )
 
         # Apply blur to sensitive regions
-        image = pylightnet.blur_sensitive_regions(image, face_bboxes, face_names, (31, 31))
-        image = pylightnet.blur_sensitive_regions(image, subnet_bboxes, subnet_names, (31, 31))
+        image = pylightnet.blur_sensitive_regions(
+            image, face_bboxes, face_names, (31, 31)
+        )
+        image = pylightnet.blur_sensitive_regions(
+            image, subnet_bboxes, subnet_names, (31, 31)
+        )
 
         # Draw results
         pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
-        pylightnet.draw_bboxes_on_image(image, subnet_bboxes, subnet_colormap, subnet_names)
+        pylightnet.draw_bboxes_on_image(
+            image, subnet_bboxes, subnet_colormap, subnet_names
+        )
         pylightnet.draw_bboxes_on_image(image, face_bboxes, face_colormap, face_names)
 
         # Display result

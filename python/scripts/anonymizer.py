@@ -24,9 +24,15 @@ import pylightnet
 
 def parse_args():
     """Parse command-line arguments for video path and config file."""
-    parser = argparse.ArgumentParser(description="Run multi-stage inference on a video using PyLightNet.")
-    parser.add_argument("-v", "--video", help="Path to the video file", required=True, type=str)
-    parser.add_argument("-f", "--flagfile", help="Path to the config file", required=True, type=str)
+    parser = argparse.ArgumentParser(
+        description="Run multi-stage inference on a video using PyLightNet."
+    )
+    parser.add_argument(
+        "-v", "--video", help="Path to the video file", required=True, type=str
+    )
+    parser.add_argument(
+        "-f", "--flagfile", help="Path to the config file", required=True, type=str
+    )
     return parser.parse_args()
 
 
@@ -69,7 +75,9 @@ def demo(video_path, config_path):
         pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
 
         subnet_bboxes = lightnet.get_subnet_bboxes()
-        pylightnet.draw_bboxes_on_image(image, subnet_bboxes, subnet_colormap, subnet_names)
+        pylightnet.draw_bboxes_on_image(
+            image, subnet_bboxes, subnet_colormap, subnet_names
+        )
 
         cv2.imshow("Result", image)
 
@@ -83,4 +91,3 @@ def demo(video_path, config_path):
 if __name__ == "__main__":
     args = parse_args()
     demo(args.video, args.flagfile)
-
