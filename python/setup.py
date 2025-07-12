@@ -30,9 +30,9 @@ class CustomBuild(build):
     def run(self):
         if not skip_ext:
             self.run_command("build_lightnet_infer")
-            build.run(self)
         else:
             print("SKIP_EXT=1 detected: skipping build_lightnet_infer")
+        super().run()
 
 
 class BuildLightnetInfer(Command):
