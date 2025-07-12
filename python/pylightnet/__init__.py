@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pkg_resources
+import copy
+import csv
+import ctypes
+import json
 import os
+import re
+
 import cv2
 import numpy as np
-import ctypes
-import csv
-import json
-import re
-import copy
+import pkg_resources
 
 __all__ = ["pylightnet"]
 
@@ -308,7 +309,7 @@ class TrtLightnet:
             ctypes.byref(build_config),
         )
 
-        if subnet_model_config != None:
+        if subnet_model_config is not None:
             self.sub_instance = self.lib.create_trt_lightnet(
                 ctypes.byref(subnet_model_config),
                 ctypes.byref(subnet_inference_config),
@@ -680,7 +681,7 @@ def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
             colormap[label * 3 + 1],
             colormap[label * 3 + 0],
         )
-        if filled == True:
+        if filled is True:
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
         else:
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)

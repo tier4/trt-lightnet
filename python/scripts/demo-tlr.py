@@ -14,11 +14,6 @@
 
 import argparse
 import cv2
-import numpy as np
-import ctypes
-import time
-from pathlib import Path
-import os
 import pylightnet
 
 
