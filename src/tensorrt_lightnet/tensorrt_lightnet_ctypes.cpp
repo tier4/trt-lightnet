@@ -808,26 +808,28 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
     auto names = lightnet->getNames();
     int num = static_cast<int>(bbox.size());
-    int maxBatchSize = std::min(subnet->getBatchSize(), num);
+    int maxBatchSize = subnet->getBatchSize();    
 
     std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
     std::vector<cv::Mat> cropped;
 
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
-
         for (int t = 0; t < count; t++) {
             if (std::string(target[t]) == names[b.classId]) {
                 flg = true;
                 break;
             }
         }
-
+	
         if (!flg) continue;
 
         cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
         cropped.push_back(image(roi));
+	if (static_cast<int>(cropped.size()) > maxBatchSize) {
+	  break;
+	}	
     }
 
     if (!cropped.size()) {
@@ -838,7 +840,7 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     subnet->doInference(static_cast<int>(cropped.size()));
 
     int actual_batch_size = 0;
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
 
@@ -860,7 +862,10 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
         }
         subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
         actual_batch_size++;
-    }
+	if (static_cast<int>(actual_batch_size) >= maxBatchSize) {
+	  break;
+	}		
+    }    
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
