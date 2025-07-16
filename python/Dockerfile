@@ -31,7 +31,7 @@ RUN apt install \
   libnvparsers-dev=${TENSORRT_VERSION} \
   && rm -rf /var/lib/apt/lists/*
 
-# Build app
+# Copy source code
 RUN mkdir -p /opt/app
 COPY . /opt/app
 WORKDIR /opt/app
@@ -40,7 +40,7 @@ WORKDIR /opt/app
 WORKDIR /opt/app/packages/cnpy
 RUN mkdir -p build && cd build && cmake .. && make -j && make install
 
-# Build main application
+# Build trt-lightnet
 WORKDIR /opt/app
 RUN mkdir -p build && cd build && cmake .. && make -j
 
