@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pkg_resources
+import copy
+import csv
+import ctypes
+import json
 import os
+import re
+
 import cv2
 import numpy as np
-import ctypes
-import csv
-import json
-import re
-import copy
+import pkg_resources
+
 __all__ = ["pylightnet"]
+
 
 # Define the C-compatible ModelConfigC structure
 class ModelConfigC(ctypes.Structure):
@@ -38,6 +41,7 @@ class ModelConfigC(ctypes.Structure):
         ("detection_colormap", ctypes.POINTER(ctypes.c_int)),
         ("detection_colormap_size", ctypes.c_int),
     ]
+
 
 # Define the C-compatible InferenceConfigC structure
 class InferenceConfigC(ctypes.Structure):
@@ -58,6 +62,7 @@ class InferenceConfigC(ctypes.Structure):
         ("workspace_size", ctypes.c_size_t),
     ]
 
+
 # Define the C-compatible BuildConfigC structure
 class BuildConfigC(ctypes.Structure):
     _fields_ = [
@@ -72,6 +77,7 @@ class BuildConfigC(ctypes.Structure):
         ("num_debug_tensors", ctypes.c_int),
     ]
 
+
 # Define the C-compatible BBox and BBoxInfo structures
 class BBoxC(ctypes.Structure):
     _fields_ = [
@@ -80,6 +86,7 @@ class BBoxC(ctypes.Structure):
         ("x2", ctypes.c_float),
         ("y2", ctypes.c_float),
     ]
+
 
 class BBoxInfoC(ctypes.Structure):
     _fields_ = [
@@ -95,39 +102,43 @@ class BBoxInfoC(ctypes.Structure):
         ("num_keypoints", ctypes.c_int),
         ("attribute", ctypes.c_char * 256),
         ("attribute_prob", ctypes.c_float),
-        ("batch_index", ctypes.c_int),                         # Index in batch
+        ("batch_index", ctypes.c_int),  # Index in batch
     ]
+
 
 class ColormapC(ctypes.Structure):
     _fields_ = [
         ("id", ctypes.c_int),
         ("name", ctypes.c_char * 50),  # Fixed-length string (50 bytes)
         ("color", ctypes.c_ubyte * 3),  # RGB as unsigned char array
-        ("is_dynamic", ctypes.c_bool)
+        ("is_dynamic", ctypes.c_bool),
     ]
-    
+
+
 # Utility functions to load names and colormap from files
 def load_names_from_file(filename):
     """Load class names from a text file."""
     with open(filename, "r") as f:
         return [line.strip() for line in f if line.strip()]
 
+
 def load_colormap_from_file(filename):
     """Load colormap data from a file."""
     with open(filename, "r") as f:
         colormap = []
         for line in f:
-            if line == "\n" :
+            if line == "\n":
                 continue
             values = [int(v) for v in line.strip().split(",")]
             if len(values) == 3:
                 colormap.extend(values)
         return colormap
 
+
 def load_segmentation_data(csv_file_path):
     """
     Load segmentation data from a CSV file and store it in a dictionary.
-    
+
     :param csv_file_path: Path to the CSV file
     :return: A dictionary with 'id' as the key and segmentation properties as values
     """
@@ -140,9 +151,11 @@ def load_segmentation_data(csv_file_path):
                 "r": int(row["r"]),
                 "g": int(row["g"]),
                 "b": int(row["b"]),
-                "dynamic": row["dynamic"].lower() == "true"  # Convert string to boolean
+                "dynamic": row["dynamic"].lower()
+                == "true",  # Convert string to boolean
             }
     return data_dict
+
 
 def compute_iou(box1, box2):
     """Compute IoU between two boxes: [x1, y1, x2, y2]"""
@@ -158,6 +171,7 @@ def compute_iou(box1, box2):
     union = area1 + area2 - inter_area
     return inter_area / union if union > 0 else 0.0
 
+
 def nms_bboxes(results, iou_thresh=0.5):
     """Apply NMS to a list of result dicts with 'box' and 'prob'."""
     if not results:
@@ -172,28 +186,41 @@ def nms_bboxes(results, iou_thresh=0.5):
         keep.append(best)
 
         sorted_results = [
-            r for r in sorted_results
-            if compute_iou(best["box"], r["box"]) < iou_thresh
+            r for r in sorted_results if compute_iou(best["box"], r["box"]) < iou_thresh
         ]
 
     return keep
 
+
 # Wrapper for TrtLightnet
 class TrtLightnet:
-    def __init__(self, model_config, inference_config, build_config, subnet_model_config=None, subnet_inference_config=None):
+    def __init__(
+        self,
+        model_config,
+        inference_config,
+        build_config,
+        subnet_model_config=None,
+        subnet_inference_config=None,
+    ):
         # Load dependent library libcnpy.so as a global library
-        libcnpy_path = pkg_resources.resource_filename(__name__, os.path.join("libcnpy.so"))
+        libcnpy_path = pkg_resources.resource_filename(
+            __name__, os.path.join("libcnpy.so")
+        )
         try:
             ctypes.CDLL(libcnpy_path, mode=ctypes.RTLD_GLOBAL)
         except Exception as e:
-            raise RuntimeError(f"Failed to load dependent library libcnpy.so from {libcnpy_path}") from e
+            raise RuntimeError(
+                f"Failed to load dependent library libcnpy.so from {libcnpy_path}"
+            ) from e
 
         # Load the main library liblightnetinfer.so
         lib_path = pkg_resources.resource_filename(__name__, "liblightnetinfer.so")
         try:
             self.lib = ctypes.CDLL(lib_path)
         except Exception as e:
-            raise RuntimeError(f"Failed to load library liblightnetinfer.so from {lib_path}") from e
+            raise RuntimeError(
+                f"Failed to load library liblightnetinfer.so from {lib_path}"
+            ) from e
 
         # Define argument and return types
         self.lib.create_trt_lightnet.argtypes = [
@@ -207,7 +234,7 @@ class TrtLightnet:
             ctypes.c_void_p,
         ]
         self.lib.destroy_trt_lightnet.restype = None
-        
+
         self.lib.trt_lightnet_get_input_size.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_int),
@@ -215,7 +242,7 @@ class TrtLightnet:
             ctypes.POINTER(ctypes.c_int),
             ctypes.POINTER(ctypes.c_int),
         ]
-        
+
         self.lib.trt_lightnet_get_input_size.restype = None
 
         self.lib.infer_lightnet_wrapper.argtypes = [
@@ -228,21 +255,20 @@ class TrtLightnet:
         self.lib.infer_lightnet_wrapper.restype = None
 
         self.lib.infer_batches.argtypes = [
-            ctypes.c_void_p,                                       # void* instance
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),        # unsigned char** imgs
-            ctypes.POINTER(ctypes.c_int),                          # int* heights
-            ctypes.POINTER(ctypes.c_int),                          # int* widths
-            ctypes.POINTER(ctypes.c_int),                          # int* channels
-            ctypes.c_int,                                          # int batch_size
-            ctypes.POINTER(ctypes.POINTER(BBoxInfoC)),             # BBoxInfoC** out_bboxes
-            ctypes.POINTER(ctypes.c_int)                           # int* out_bbox_count
+            ctypes.c_void_p,  # void* instance
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),  # unsigned char** imgs
+            ctypes.POINTER(ctypes.c_int),  # int* heights
+            ctypes.POINTER(ctypes.c_int),  # int* widths
+            ctypes.POINTER(ctypes.c_int),  # int* channels
+            ctypes.c_int,  # int batch_size
+            ctypes.POINTER(ctypes.POINTER(BBoxInfoC)),  # BBoxInfoC** out_bboxes
+            ctypes.POINTER(ctypes.c_int),  # int* out_bbox_count
         ]
         self.lib.infer_batches.restype = None
-        
-        
+
         self.lib.infer_multi_stage_lightnet_wrapper.argtypes = [
             ctypes.c_void_p,
-            ctypes.c_void_p,            
+            ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_ubyte),
             ctypes.c_int,
             ctypes.c_int,
@@ -250,26 +276,32 @@ class TrtLightnet:
             ctypes.POINTER(ctypes.c_char_p),
             ctypes.c_int,
         ]
-        self.lib.infer_multi_stage_lightnet_wrapper.restype = None        
+        self.lib.infer_multi_stage_lightnet_wrapper.restype = None
 
         self.lib.blur_image.argtypes = [
             ctypes.c_void_p,
-            ctypes.c_void_p,            
+            ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_ubyte),
             ctypes.c_int,
             ctypes.c_int,
         ]
         self.lib.blur_image.restype = None
-        
-        self.lib.get_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+
+        self.lib.get_bbox_array.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int),
+        ]
         self.lib.get_bbox_array.restype = ctypes.POINTER(BBoxInfoC)
 
         self.lib.get_top_index.argtypes = [ctypes.c_void_p]
-        self.lib.get_top_index.restype = ctypes.c_int    
+        self.lib.get_top_index.restype = ctypes.c_int
 
-        self.lib.get_subnet_bbox_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
-        self.lib.get_subnet_bbox_array.restype = ctypes.POINTER(BBoxInfoC)        
-                
+        self.lib.get_subnet_bbox_array.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        self.lib.get_subnet_bbox_array.restype = ctypes.POINTER(BBoxInfoC)
+
         # Create the C++ TrtLightnet instance
         self.instance = self.lib.create_trt_lightnet(
             ctypes.byref(model_config),
@@ -277,17 +309,20 @@ class TrtLightnet:
             ctypes.byref(build_config),
         )
 
-        if subnet_model_config != None :
+        if subnet_model_config is not None:
             self.sub_instance = self.lib.create_trt_lightnet(
                 ctypes.byref(subnet_model_config),
                 ctypes.byref(subnet_inference_config),
                 ctypes.byref(build_config),
             )
-        
+
         if not self.instance:
             raise RuntimeError("Failed to create TrtLightnet instance")
 
-        self.lib.convert_to_vec3b.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+        self.lib.convert_to_vec3b.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+        ]
         self.lib.convert_to_vec3b.restype = ctypes.POINTER(ctypes.c_void_p)
         self.lib.free_vec3b.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
         self.lib.free_vec3b.restype = None
@@ -301,23 +336,32 @@ class TrtLightnet:
         self.lib.get_mask_count.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
         self.lib.get_mask_count.restype = ctypes.c_size_t
 
-        self.lib.get_mask_data.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+        self.lib.get_mask_data.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+        ]
         self.lib.get_mask_data.restype = ctypes.POINTER(ctypes.c_uint8)
 
-        self.lib.get_mask_shape.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        self.lib.get_mask_shape.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
 
         self.lib.free_masks.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
         self.lib.free_masks.restype = None
 
         self.lib.get_polygon_str.argtypes = [
             ctypes.c_void_p,  # instance (pointer to shared_ptr)
-            ctypes.c_int, ctypes.c_int,  # width, height
-            ctypes.POINTER(ColormapC), ctypes.c_size_t,  # colormap array and length
-            ctypes.c_char_p  # image_name
+            ctypes.c_int,
+            ctypes.c_int,  # width, height
+            ctypes.POINTER(ColormapC),
+            ctypes.c_size_t,  # colormap array and length
+            ctypes.c_char_p,  # image_name
         ]
         self.lib.get_polygon_str.restype = ctypes.c_char_p  # Returns a string
-
-        
 
     def get_input_size(self):
         batch = ctypes.c_int()
@@ -325,7 +369,11 @@ class TrtLightnet:
         height = ctypes.c_int()
         width = ctypes.c_int()
         self.lib.trt_lightnet_get_input_size(
-            self.instance, ctypes.byref(batch), ctypes.byref(chan), ctypes.byref(height), ctypes.byref(width)
+            self.instance,
+            ctypes.byref(batch),
+            ctypes.byref(chan),
+            ctypes.byref(height),
+            ctypes.byref(width),
         )
         return batch.value, chan.value, height.value, width.value
 
@@ -336,11 +384,20 @@ class TrtLightnet:
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, cuda)
 
-
-    def destroy(self) :
+    def destroy(self):
         self.lib.destroy_trt_lightnet(self.instance)
-        
-    def infer_subnet_batches_from_bboxes(self, bboxes, image, all_labels, target_labels, subnet_labels, batch_size, min_crop_size, debug=False):
+
+    def infer_subnet_batches_from_bboxes(
+        self,
+        bboxes,
+        image,
+        all_labels,
+        target_labels,
+        subnet_labels,
+        batch_size,
+        min_crop_size,
+        debug=False,
+    ):
         """Filter, classify, and annotate bounding boxes on the input image."""
 
         valid_bboxes = []
@@ -351,17 +408,19 @@ class TrtLightnet:
                 continue
 
             label_id = bbox["label"]
-            class_name = all_labels[label_id] if label_id < len(all_labels) else "Unknown"
+            class_name = (
+                all_labels[label_id] if label_id < len(all_labels) else "Unknown"
+            )
             if class_name in target_labels:
                 valid_bboxes.append(bbox)
 
         results = []
 
         for i in range(0, len(valid_bboxes), batch_size):
-            current_batch = valid_bboxes[i:i + batch_size]
+            current_batch = valid_bboxes[i : i + batch_size]
 
             cropped_imgs = [
-                image[int(y1):int(y2), int(x1):int(x2)].copy()
+                image[int(y1) : int(y2), int(x1) : int(x2)].copy()
                 for x1, y1, x2, y2 in (bbox["box"] for bbox in current_batch)
             ]
 
@@ -389,7 +448,7 @@ class TrtLightnet:
                 channels,
                 num,
                 ctypes.byref(bbox_ptr),
-                ctypes.byref(bbox_count)
+                ctypes.byref(bbox_count),
             )
 
             for j in range(bbox_count.value):
@@ -416,60 +475,75 @@ class TrtLightnet:
             libc = ctypes.CDLL("libc.so.6")
             libc.free.argtypes = [ctypes.c_void_p]
             libc.free(bbox_ptr)
-            
+
         filtered_results = nms_bboxes(results, iou_thresh=0.45)
         return filtered_results
-    
-            
-        
+
     def infer_multi_stage(self, image, target_list, cuda=False):
         if image.dtype != np.uint8:
             raise ValueError("Image must be of type np.uint8")
         height, width, _ = image.shape
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
-        c_array = (ctypes.c_char_p * len(target_list))(*[s.encode('utf-8') for s in target_list])
-        self.lib.infer_multi_stage_lightnet_wrapper(self.instance, self.sub_instance, img_data, width, height, cuda, c_array, len(target_list))        
+        c_array = (ctypes.c_char_p * len(target_list))(
+            *[s.encode("utf-8") for s in target_list]
+        )
+        self.lib.infer_multi_stage_lightnet_wrapper(
+            self.instance,
+            self.sub_instance,
+            img_data,
+            width,
+            height,
+            cuda,
+            c_array,
+            len(target_list),
+        )
 
-    def classifer_from_bboxes(self, image, bboxes, names, target, sub_names, cuda=False) :
+    def classifer_from_bboxes(
+        self, image, bboxes, names, target, sub_names, cuda=False
+    ):
         count = 0
         for bbox in bboxes:
             x1, y1, x2, y2 = bbox["box"]
             label = bbox["label"]
             class_name = names[label] if label < len(names) else "Unknown"
-            if class_name != target :
+            if class_name != target:
                 continue
-            cropped = image[int(y1):int(y2), int(x1):int(x2)].copy()
+            cropped = image[int(y1) : int(y2), int(x1) : int(x2)].copy()
             height, width, _ = cropped.shape
             img_data = cropped.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
-            self.lib.infer_lightnet_wrapper(self.instance, img_data, width, height, False)
+            self.lib.infer_lightnet_wrapper(
+                self.instance, img_data, width, height, False
+            )
             top_index = self.lib.get_top_index(self.instance)
 
             bbox["sub_name"] = sub_names[top_index]
-            count = count+1
-            
+            count = count + 1
+
     def blur_image(self, image):
         if image.dtype != np.uint8:
             raise ValueError("Image must be of type np.uint8")
         height, width, _ = image.shape
         img_data = image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         self.lib.blur_image(self.instance, self.sub_instance, img_data, width, height)
-        
+
     def get_bboxes(self):
         size = ctypes.c_int()
         bbox_array = self.lib.get_bbox_array(self.instance, ctypes.byref(size))
         bboxes = []
         for i in range(size.value):
             bbox = bbox_array[i]
-            bboxes.append({
-                "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
-                "label": bbox.label,
-                "classId": bbox.classId,
-                "prob": bbox.prob,
-                "subClassId" : bbox.subClassId,
-                "sin" : bbox.sin,
-                "cos" : bbox.cos,
-                "id" : i,
-            })
+            bboxes.append(
+                {
+                    "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
+                    "label": bbox.label,
+                    "classId": bbox.classId,
+                    "prob": bbox.prob,
+                    "subClassId": bbox.subClassId,
+                    "sin": bbox.sin,
+                    "cos": bbox.cos,
+                    "id": i,
+                }
+            )
         return bboxes
 
     def get_subnet_bboxes(self):
@@ -478,52 +552,57 @@ class TrtLightnet:
         bboxes = []
         for i in range(size.value):
             bbox = bbox_array[i]
-            bboxes.append({
-                "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
-                "label": bbox.label,
-                "classId": bbox.classId,
-                "prob": bbox.prob,
-                "subClassId" : bbox.subClassId,
-                "sin" : bbox.sin,
-                "cos" : bbox.cos,                
-            })
+            bboxes.append(
+                {
+                    "box": (bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2),
+                    "label": bbox.label,
+                    "classId": bbox.classId,
+                    "prob": bbox.prob,
+                    "subClassId": bbox.subClassId,
+                    "sin": bbox.sin,
+                    "cos": bbox.cos,
+                }
+            )
 
-        return bboxes    
+        return bboxes
 
     def make_mask(self, argmax2bgr_ptr):
         """
         Call the C++ function TrtLightnet::makeMask with the given std::vector<cv::Vec3b>.
-        
+
         :param argmax2bgr_ptr: Pointer to std::vector<cv::Vec3b>
         """
         self.lib.makeMask(self.instance, argmax2bgr_ptr)
-            
-        
+
     def segmentation_to_argmax2bgr(self, segmentation_data):
         """
         Convert segmentation data to a C++ std::vector<cv::Vec3b> via ctypes.
-        
+
         :param segmentation_data: Dictionary with segmentation IDs and RGB values.
         :return: Pointer to std::vector<cv::Vec3b> in C++.
         """
         # Extract RGB values from segmentation_data
         rgb_list = []
         for key in sorted(segmentation_data.keys()):  # Ensure order consistency
-            rgb_list.extend([
-                segmentation_data[key]["b"],  # OpenCV uses BGR format
-                segmentation_data[key]["g"],
-                segmentation_data[key]["r"]
-            ])
+            rgb_list.extend(
+                [
+                    segmentation_data[key]["b"],  # OpenCV uses BGR format
+                    segmentation_data[key]["g"],
+                    segmentation_data[key]["r"],
+                ]
+            )
 
         # Convert list to a NumPy array (uint8)
         rgb_array = np.array(rgb_list, dtype=np.uint8)
 
         # Call C++ function to convert to std::vector<cv::Vec3b>
-        self.argmax2bgr_ptr = self.lib.convert_to_vec3b(rgb_array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)), rgb_array.size)
+        self.argmax2bgr_ptr = self.lib.convert_to_vec3b(
+            rgb_array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)), rgb_array.size
+        )
 
         return self.argmax2bgr_ptr
 
-    def free_argmax2bgr(self) :
+    def free_argmax2bgr(self):
         self.lib.free_vec3b(self.argmax2bgr_ptr)
 
     def get_masks_from_cpp(self):
@@ -544,18 +623,23 @@ class TrtLightnet:
             channels = ctypes.c_int()
 
             # Get shape of the mask
-            self.lib.get_mask_shape(masks_ptr, i, ctypes.byref(rows), ctypes.byref(cols), ctypes.byref(channels))
+            self.lib.get_mask_shape(
+                masks_ptr,
+                i,
+                ctypes.byref(rows),
+                ctypes.byref(cols),
+                ctypes.byref(channels),
+            )
             rows, cols, channels = rows.value, cols.value, channels.value
-
 
             # Get mask data
             data_ptr = self.lib.get_mask_data(masks_ptr, i)
-            
+
             if data_ptr:
                 # Convert to NumPy array
                 array = np.ctypeslib.as_array(data_ptr, shape=(rows, cols, channels))
                 masks.append(array.copy())  # Copy to avoid memory issues
-                
+
         # Free the allocated memory in C++
         self.lib.free_masks(masks_ptr)
 
@@ -570,18 +654,21 @@ class TrtLightnet:
                 id=key,
                 name=entry["name"].encode("utf-8"),  # Encode to bytes
                 color=(ctypes.c_ubyte * 3)(entry["r"], entry["g"], entry["b"]),
-                is_dynamic=entry["dynamic"]
+                is_dynamic=entry["dynamic"],
             )
             colormap_list.append(colormap)
 
         # Convert list to ctypes array
         colormap_array = (ColormapC * len(colormap_list))(*colormap_list)
-        c_string = filename.encode('utf-8')
+        c_string = filename.encode("utf-8")
         # Call the C++ function
-        result_ptr = self.lib.get_polygon_str(self.instance, width, height, colormap_array, len(colormap_list), c_string)
+        result_ptr = self.lib.get_polygon_str(
+            self.instance, width, height, colormap_array, len(colormap_list), c_string
+        )
         result_str = result_ptr.decode("utf-8")
-        image_annotations = json.loads(result_str)        
+        image_annotations = json.loads(result_str)
         return image_annotations
+
 
 # Function to draw bounding boxes
 def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
@@ -589,20 +676,46 @@ def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
         x1, y1, x2, y2 = bbox["box"]
         label = bbox["label"]
         class_name = names[label] if label < len(names) else "Unknown"
-        color = (colormap[label * 3 + 2], colormap[label * 3 + 1], colormap[label * 3 + 0])
-        if filled == True :
+        color = (
+            colormap[label * 3 + 2],
+            colormap[label * 3 + 1],
+            colormap[label * 3 + 0],
+        )
+        if filled is True:
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
-        else :
+        else:
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-        cv2.putText(image, f"{class_name} ({bbox['prob']:.2f})", (int(x1), int(y1) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        if "attribute_prob" in bbox and bbox["attribute_prob"] > 0.1 :
-            attr = bbox['attribute']
+        cv2.putText(
+            image,
+            f"{class_name} ({bbox['prob']:.2f})",
+            (int(x1), int(y1) - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            2,
+        )
+        if "attribute_prob" in bbox and bbox["attribute_prob"] > 0.1:
+            attr = bbox["attribute"]
             attr_prob = bbox["attribute_prob"]
-            cv2.putText(image, f"--> {attr} ({attr_prob:.2f})", (int(x1), int(y1) + 20), cv2.FONT_ITALIC, 0.5, color, 2)
+            cv2.putText(
+                image,
+                f"--> {attr} ({attr_prob:.2f})",
+                (int(x1), int(y1) + 20),
+                cv2.FONT_ITALIC,
+                0.5,
+                color,
+                2,
+            )
         if "sub_name" in bbox:
-            cv2.putText(image, f"--> {bbox['sub_name']}", (int(x1), int(y1) + 20), cv2.FONT_ITALIC, 0.5, color, 2)            
-
+            cv2.putText(
+                image,
+                f"--> {bbox['sub_name']}",
+                (int(x1), int(y1) + 20),
+                cv2.FONT_ITALIC,
+                0.5,
+                color,
+                2,
+            )
 
 
 def load_config(file_path):
@@ -614,23 +727,35 @@ def load_config(file_path):
             if not line or line.startswith("#"):
                 continue  # Ignore comments and empty lines
 
-            key, value = line.lstrip("--").split("=", 1) if "=" in line else (line.lstrip("--"), None)
+            key, value = (
+                line.lstrip("--").split("=", 1)
+                if "=" in line
+                else (line.lstrip("--"), None)
+            )
 
             # Convert values to appropriate types
             if value is not None:
                 if value.isdigit():
                     value = int(value)
-                elif value.replace('.', '', 1).isdigit():
+                elif value.replace(".", "", 1).isdigit():
                     value = float(value)
                 elif value.lower() in ["true", "false"]:
                     value = value.lower() == "true"
                 elif "," in value:
                     value = re.sub(r"\s+", "", value)
-                    value = [int(v) if v.isdigit() else float(v) if v.replace('.', '', 1).isdigit() else v for v in value.split(",")]
+                    value = [
+                        int(v)
+                        if v.isdigit()
+                        else float(v)
+                        if v.replace(".", "", 1).isdigit()
+                        else v
+                        for v in value.split(",")
+                    ]
 
             config_dict[key] = value
 
-    return config_dict               
+    return config_dict
+
 
 def parse_model_config(config_dict):
     """Parse model configuration and store it in a ModelConfigC object."""
@@ -638,13 +763,13 @@ def parse_model_config(config_dict):
     model_config.model_path = config_dict["onnx"].encode("utf-8")
     model_config.num_class = int(config_dict["c"])
     model_config.score_threshold = float(config_dict["thresh"])
-    
+
     # Convert anchors to a ctypes array\
-    '''
+    """
     if not isinstance(config_dict["anchors"], list):
         raise ValueError("anchors should be a list of integers")
-    '''
-    if "anchors" in config_dict :
+    """
+    if "anchors" in config_dict:
         model_config.anchors = (ctypes.c_int * 40)(*config_dict["anchors"])
         model_config.anchor_elements = len(config_dict["anchors"])
         model_config.num_anchors = int(config_dict["num_anchors"])
@@ -661,7 +786,9 @@ def parse_model_config(config_dict):
     # Convert colormap to ctypes array
     detection_colormap = load_colormap_from_file(config_dict["rgb"])
     c_detection_colormap = (ctypes.c_int * len(detection_colormap))(*detection_colormap)
-    model_config.detection_colormap = ctypes.cast(c_detection_colormap, ctypes.POINTER(ctypes.c_int))
+    model_config.detection_colormap = ctypes.cast(
+        c_detection_colormap, ctypes.POINTER(ctypes.c_int)
+    )
     model_config.detection_colormap_size = len(detection_colormap)
 
     return model_config
@@ -672,16 +799,18 @@ def parse_inference_config(config_dict):
     inference_config = InferenceConfigC()
     inference_config.precision = config_dict["precision"].encode("utf-8")
     inference_config.profile = False
-    if "sparse" in config_dict :
+    if "sparse" in config_dict:
         inference_config.sparse = bool(config_dict["sparse"])
     inference_config.dla_core_id = -1
     inference_config.use_first_layer = False
     inference_config.use_last_layer = False
     inference_config.batch_size = 1
     inference_config.scale = 1.0
-    inference_config.calibration_images = config_dict["calibration_images"].encode("utf-8")
+    inference_config.calibration_images = config_dict["calibration_images"].encode(
+        "utf-8"
+    )
     inference_config.calibration_type = config_dict["calib"].encode("utf-8")
-        
+
     inference_config.max_batch_size = 1
     inference_config.min_batch_size = 1
     inference_config.optimal_batch_size = 1
@@ -699,7 +828,7 @@ def parse_build_config(config_dict):
     build_config.quantize_last_layer = False
     build_config.profile_per_layer = True
     build_config.clip_value = -1
-    if "sparse" in config_dict :    
+    if "sparse" in config_dict:
         build_config.sparse = bool(config_dict["sparse"])
 
     # Set debug tensors
@@ -712,44 +841,51 @@ def parse_build_config(config_dict):
 
     return build_config
 
+
 # Function to create a TrtLightnet instance from a configuration dictionary
 def create_lightnet_from_config(config_dict):
     """
     Initialize a TrtLightnet instance using the provided configuration dictionary.
-    
+
     :param config_dict: Dictionary containing configuration settings
     :return: TrtLightnet instance
     """
     model_config = parse_model_config(config_dict)
     inference_config = parse_inference_config(config_dict)
     build_config = parse_build_config(config_dict)
-    if "subnet_onnx" in config_dict :
-        #Parse subnet like TLR and anonymizer
+    if "subnet_onnx" in config_dict:
+        # Parse subnet like TLR and anonymizer
         subnet_model_config = parse_subnet_model_config(config_dict)
         subnet_inference_config = parse_inference_config(config_dict)
-        if "batch_size" in config_dict :
+        if "batch_size" in config_dict:
             batch_size = config_dict["batch_size"]
-            subnet_inference_config.max_batch_size = batch_size                
-            subnet_inference_config.optimal_batch_size = (int)(batch_size/2)
-            subnet_inference_config.min_batch_size = 1        
-        return TrtLightnet(model_config, inference_config, build_config, subnet_model_config, subnet_inference_config)
-    else :
-        return TrtLightnet(model_config, inference_config, build_config)    
+            subnet_inference_config.max_batch_size = batch_size
+            subnet_inference_config.optimal_batch_size = (int)(batch_size / 2)
+            subnet_inference_config.min_batch_size = 1
+        return TrtLightnet(
+            model_config,
+            inference_config,
+            build_config,
+            subnet_model_config,
+            subnet_inference_config,
+        )
+    else:
+        return TrtLightnet(model_config, inference_config, build_config)
 
-    
+
 def parse_subnet_model_config(config_dict):
     """Parse model configuration and store it in a ModelConfigC object."""
     model_config = ModelConfigC()
     model_config.model_path = config_dict["subnet_onnx"].encode("utf-8")
     model_config.num_class = int(config_dict["subnet_c"])
     model_config.score_threshold = float(config_dict["subnet_thresh"])
-    
+
     # Convert anchors to a ctypes array\
-    '''
+    """
     if not isinstance(config_dict["anchors"], list):
         raise ValueError("anchors should be a list of integers")
-    '''
-    if "anchors" in config_dict :
+    """
+    if "anchors" in config_dict:
         model_config.anchors = (ctypes.c_int * 40)(*config_dict["subnet_anchors"])
         model_config.anchor_elements = len(config_dict["subnet_anchors"])
         model_config.num_anchors = int(config_dict["subnet_num_anchors"])
@@ -766,10 +902,13 @@ def parse_subnet_model_config(config_dict):
     # Convert colormap to ctypes array
     detection_colormap = load_colormap_from_file(config_dict["subnet_rgb"])
     c_detection_colormap = (ctypes.c_int * len(detection_colormap))(*detection_colormap)
-    model_config.detection_colormap = ctypes.cast(c_detection_colormap, ctypes.POINTER(ctypes.c_int))
+    model_config.detection_colormap = ctypes.cast(
+        c_detection_colormap, ctypes.POINTER(ctypes.c_int)
+    )
     model_config.detection_colormap_size = len(detection_colormap)
 
     return model_config
+
 
 def merge_bbox(bboxes1, bboxes2, names1, names2):
     """
@@ -800,6 +939,7 @@ def merge_bbox(bboxes1, bboxes2, names1, names2):
     ret = nms_bboxes(bboxes1, iou_thresh=0.45)
     return ret
 
+
 def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
     """
     Apply blur to regions labeled as LICENSE_PLATE or HUMAN_HEAD.
@@ -819,7 +959,7 @@ def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
         label_id = bbox["label"]
         if label_id >= len(label_names):
             continue
-                                                
+
         label_name = label_names[label_id]
         if label_name in ["LICENSE_PLATE", "HUMAN_HEAD"]:
             x1, y1, x2, y2 = map(int, bbox["box"])

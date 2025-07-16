@@ -14,19 +14,20 @@
 
 import argparse
 import cv2
-import numpy as np
-import ctypes
-import time
-from pathlib import Path
-import os
 import pylightnet
 
 
 def parse_args():
     """Parse command-line arguments for video path and config file."""
-    parser = argparse.ArgumentParser(description="Run inference on a video using PyLightNet.")
-    parser.add_argument("-v", "--video", help="Path to the video file", required=True, type=str)
-    parser.add_argument("-f", "--flagfile", help="Path to the config file", required=True, type=str)
+    parser = argparse.ArgumentParser(
+        description="Run inference on a video using PyLightNet."
+    )
+    parser.add_argument(
+        "-v", "--video", help="Path to the video file", required=True, type=str
+    )
+    parser.add_argument(
+        "-f", "--flagfile", help="Path to the config file", required=True, type=str
+    )
     return parser.parse_args()
 
 
@@ -76,4 +77,3 @@ def demo(video_path, config_path):
 if __name__ == "__main__":
     args = parse_args()
     demo(args.video, args.flagfile)
-
