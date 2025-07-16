@@ -20,3 +20,9 @@ $ python scripts/demo.py \
     -f <path/to/flagfile.txt> \
     -v <path/to/video.mp4>
 ```
+
+## Installation & Test with Docker
+You can install pylightnet and test it with Docker using the following command:
+```bash
+$ make test-pylightnet
+```
