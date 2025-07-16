@@ -143,7 +143,7 @@ setup(
     },
     install_requires=[
         "opencv-python",
-        "numpy",
+        "numpy<2.0",
     ],
     extras_require={
         "dev": [
