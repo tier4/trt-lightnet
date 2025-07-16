@@ -7,7 +7,7 @@ build-base-image:
 # Test that pylightnet can be installed properly in the container
 test-pylightnet: build-base-image
 	docker run --rm trt-lightnet-base /bin/bash -c " \
-		python3 -m pip install --upgrade pip setuptools wheel packaging && \
+		python3 -m pip install --upgrade setuptools && \
 		cd python && \
 		python3 -m pip install --no-cache-dir .[dev] && \
 		cd .. && \

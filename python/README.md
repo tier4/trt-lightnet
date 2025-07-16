@@ -4,11 +4,17 @@
 ## Operating Environment
 Please refer to [this page](https://github.com/hdwlab/trt-lightnet) for the operating environment.
 
+## Prerequisites
+Please ensure setuptools is updated to the latest version before installation. This package has been tested with setuptools version 80.9.0.
+
+```bash
+$ pip install -U setuptools
+```
+
 ## Installation Method
 You can install pylightnet using the following command:
 
 ```bash
-$ pip install -U setuptools pip
 $ pip install .
 ```
 
