@@ -1,4 +1,4 @@
-.PHONY: build-base-image test-install-pylightnet
+.PHONY: build-base-image test-pylightnet
 
 # Build the base Docker image from the repository root
 build-base-image:
