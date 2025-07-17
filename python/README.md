@@ -8,7 +8,7 @@ Please refer to [this page](https://github.com/hdwlab/trt-lightnet) for the oper
 Please ensure setuptools is updated to the latest version before installation. This package has been tested with setuptools version 80.9.0.
 
 ```bash
-$ pip install -U setuptools
+$ pip install setuptools==68.2.2
 ```
 
 ## Installation Method
