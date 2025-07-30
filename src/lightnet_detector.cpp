@@ -1009,11 +1009,7 @@ void inferLightNetPipeline(
 
   // Calculate entropy and save results if required
   if (get_calc_entropy_flg()) {
-    start = std::chrono::high_resolution_clock::now();
     trt_lightnet->calcEntropyFromSoftmax();
-    end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << "##Uncertainty: " << duration.count() << " ms " << std::endl;    
     if (path_config.save_path != "not-specified") {
       fs::path dstPath(path_config.save_path);
       if (!sensor_name.empty()) {
