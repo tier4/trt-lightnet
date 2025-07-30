@@ -78,7 +78,7 @@ def demo(video_path, config_path):
 
     cap.release()
     cv2.destroyAllWindows()
-
+    lightnet.destroy()
 
 if __name__ == "__main__":
     args = parse_args()

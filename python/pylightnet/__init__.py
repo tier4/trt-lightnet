@@ -352,7 +352,7 @@ class TrtLightnet:
 
         self.lib.free_masks.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
         self.lib.free_masks.restype = None
-
+        
         self.lib.get_polygon_str.argtypes = [
             ctypes.c_void_p,  # instance (pointer to shared_ptr)
             ctypes.c_int,
@@ -363,6 +363,41 @@ class TrtLightnet:
         ]
         self.lib.get_polygon_str.restype = ctypes.c_char_p  # Returns a string
 
+        self.lib.makeEntropy.argtypes = [ctypes.c_void_p]
+        self.lib.makeEntropy.restype = None        
+
+        self.lib.get_entropy_maps.argtypes = [ctypes.c_void_p]
+        self.lib.get_entropy_maps.restype = ctypes.POINTER(ctypes.c_void_p)
+
+        self.lib.get_entropy_count.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        self.lib.get_entropy_count.restype = ctypes.c_size_t
+
+        self.lib.get_entropy_data.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+        ]
+        self.lib.get_entropy_data.restype = ctypes.POINTER(ctypes.c_uint8)
+
+        self.lib.get_entropy_shape.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+
+        self.lib.free_entropy_maps.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        self.lib.free_entropy_maps.restype = None
+
+        self.lib.get_entropies.argtypes = [ctypes.c_void_p,
+                                         ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+                                         ctypes.POINTER(ctypes.c_int),
+                                         ctypes.POINTER(ctypes.c_int)]
+        self.lib.get_entropies.restype = None
+
+        self.lib.free_entropies.argtypes = [ctypes.POINTER(ctypes.c_float)]
+        self.lib.free_entropies.restype = None
+        
     def get_input_size(self):
         batch = ctypes.c_int()
         chan = ctypes.c_int()
@@ -671,7 +706,85 @@ class TrtLightnet:
         image_annotations = json.loads(result_str)
         return image_annotations
 
+    def make_entropy(self):
+        """
+        Invoke the C++ method TrtLightnet::calcEntropyFromSoftmax via ctypes.
+        """
+        self.lib.makeEntropy(self.instance)
 
+
+    def get_entropies(self):
+        """
+        Retrieve entropy values (std::vector<std::vector<float>>) from C++ and return as a NumPy 2D array.
+
+        Returns:
+        np.ndarray: A 2D matrix of shape (outer_size, inner_size) containing entropy values.
+        Raises:
+        RuntimeError: If the C++ call fails or returns a null pointer.
+        """
+        data_ptr = ctypes.POINTER(ctypes.c_float)()
+        outer = ctypes.c_int()
+        inner = ctypes.c_int()
+
+        self.lib.get_entropies(self.instance, ctypes.byref(data_ptr), ctypes.byref(outer), ctypes.byref(inner))
+
+        outer_size = outer.value
+        inner_size = inner.value
+
+        if not bool(data_ptr):
+            raise RuntimeError("Failed to get entropy data from C++.")
+
+        # Convert C array to NumPy array
+        flat_array = np.ctypeslib.as_array(data_ptr, shape=(outer_size * inner_size,))
+        matrix = flat_array.reshape((outer_size, inner_size)).copy()  # Deep copy to own the data
+
+        # Free the memory allocated in C++
+        self.lib.free_entropies(data_ptr)
+
+        return matrix
+
+
+    def get_entropy_maps_from_cpp(self):
+        """
+        Retrieve entropy visualization maps (std::vector<cv::Mat>) from C++.
+        
+        Returns:
+        List[np.ndarray]: List of HxWxC NumPy arrays (typically C=3 for BGR images).
+        """
+        entropy_maps_ptr = self.lib.get_entropy_maps(self.instance)
+        entropy_count = self.lib.get_entropy_count(entropy_maps_ptr)
+
+        entropy_maps = []
+
+        for i in range(entropy_count):
+            rows = ctypes.c_int()
+            cols = ctypes.c_int()
+            channels = ctypes.c_int()
+
+            # Get shape info of each cv::Mat
+            self.lib.get_entropy_shape(
+                entropy_maps_ptr,
+                i,
+                ctypes.byref(rows),
+                ctypes.byref(cols),
+                ctypes.byref(channels),
+            )
+
+            r, c, ch = rows.value, cols.value, channels.value
+
+            # Get raw image data pointer
+            data_ptr = self.lib.get_entropy_data(entropy_maps_ptr, i)
+
+            if data_ptr:
+                np_image = np.ctypeslib.as_array(data_ptr, shape=(r, c, ch))
+                entropy_maps.append(np_image.copy())  # Copy is necessary to avoid dangling pointers
+
+        # Free the vector<cv::Mat> allocated in C++
+        self.lib.free_entropy_maps(entropy_maps_ptr)
+
+        return entropy_maps
+
+    
 # Function to draw bounding boxes
 def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
     for bbox in bboxes:

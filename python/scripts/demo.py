@@ -23,55 +23,79 @@ def parse_args():
         description="Run inference on a video using PyLightNet."
     )
     parser.add_argument(
-        "-v", "--video", help="Path to the video file", required=True, type=str
+        "-v", "--video", required=True, type=str,
+        help="Path to the input video file"
     )
     parser.add_argument(
-        "-f", "--flagfile", help="Path to the config file", required=True, type=str
+        "-f", "--flagfile", required=True, type=str,
+        help="Path to the configuration (flag) file"
     )
     return parser.parse_args()
 
 
 def demo(video_path, config_path):
-    """Perform inference on the given video using the provided config file.
+    """Run inference on the given video using the provided PyLightNet config.
 
     Args:
-        video_path (str): Path to the input video file.
-        config_path (str): Path to the configuration file for PyLightNet.
+        video_path (str): Path to the input video.
+        config_path (str): Path to the PyLightNet configuration file.
     """
-    config_dict = pylightnet.load_config(config_path)
-    names = pylightnet.load_names_from_file(config_dict["names"])
-    colormap = pylightnet.load_colormap_from_file(config_dict["rgb"])
-    lightnet = pylightnet.create_lightnet_from_config(config_dict)
+    config = pylightnet.load_config(config_path)
+    names = pylightnet.load_names_from_file(config["names"])
+    colormap = pylightnet.load_colormap_from_file(config["rgb"])
+    lightnet = pylightnet.create_lightnet_from_config(config)
+
+    seg_data = pylightnet.load_segmentation_data(config["mask"]) if "mask" in config else None
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print("Error: Could not open video.")
-        exit()
+        print(f"Error: Could not open video at '{video_path}'")
+        return
 
     while True:
-        ret, image = cap.read()
+        ret, frame = cap.read()
         if not ret:
             break
 
-        height, width, _ = image.shape
+        height, width, _ = frame.shape
 
-        # Run inference on the current frame
-        lightnet.infer(image, cuda=True)
+        # Inference
+        lightnet.infer(frame, cuda=True)
 
-        # Get and draw bounding boxes
+        # Draw bounding boxes
         bboxes = lightnet.get_bboxes()
-        pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
+        pylightnet.draw_bboxes_on_image(frame, bboxes, colormap, names)
 
-        # Resize for display
-        image = cv2.resize(image, (1920, 1280))
+        # Segmentation visualization
+        if seg_data is not None:
+            argmax2bgr_ptr = lightnet.segmentation_to_argmax2bgr(seg_data)
+            lightnet.make_mask(argmax2bgr_ptr)
+            masks = lightnet.get_masks_from_cpp()
+            for i, mask in enumerate(masks):
+                cv2.imshow(f"Mask_{i}", mask)
 
-        cv2.imshow("Result", image)
+        # Entropy visualization
+        if "entropy" in config:
+            lightnet.make_entropy()
+            entropies = lightnet.get_entropies()
+            print("Entropy values:", entropies)
 
+            entropy_maps = lightnet.get_entropy_maps_from_cpp()
+            for i, emap in enumerate(entropy_maps):
+                cv2.imshow(f"Entropy_{i}", emap)
+
+        # Resize main image for display
+        frame_resized = cv2.resize(frame, (1920, 1280))
+        cv2.imshow("Result", frame_resized)
+
+        # Exit on 'q' key
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
+    # Cleanup
     cap.release()
     cv2.destroyAllWindows()
+    lightnet.destroy()
 
 
 if __name__ == "__main__":
