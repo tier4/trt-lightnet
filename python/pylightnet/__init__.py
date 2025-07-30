@@ -386,6 +386,8 @@ class TrtLightnet:
 
     def destroy(self):
         self.lib.destroy_trt_lightnet(self.instance)
+        if hasattr(self, "sub_instance"):
+            self.lib.destroy_trt_lightnet(self.sub_instance)
 
     def infer_subnet_batches_from_bboxes(
         self,
