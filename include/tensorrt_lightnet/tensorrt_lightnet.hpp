@@ -1171,7 +1171,9 @@ public:
   cv::Mat occupancy_;
 
   CudaUniquePtr<float[]> d_entropy_;
-  CudaUniquePtrHost<float[]> h_entropy_;  
+  CudaUniquePtrHost<float[]> h_entropy_;
+  CudaUniquePtr<unsigned char[]> d_peakEntropy_u8_;
+  CudaUniquePtrHost<unsigned char[]> h_peakEntropy_u8_;   
 };
 
 }  // namespace tensorrt_lightnet

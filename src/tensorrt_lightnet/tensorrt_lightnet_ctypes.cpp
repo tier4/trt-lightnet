@@ -808,26 +808,28 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
     auto names = lightnet->getNames();
     int num = static_cast<int>(bbox.size());
-    int maxBatchSize = std::min(subnet->getBatchSize(), num);
+    int maxBatchSize = subnet->getBatchSize();    
 
     std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
     std::vector<cv::Mat> cropped;
 
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
-
         for (int t = 0; t < count; t++) {
             if (std::string(target[t]) == names[b.classId]) {
                 flg = true;
                 break;
             }
         }
-
+	
         if (!flg) continue;
 
         cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
         cropped.push_back(image(roi));
+	if (static_cast<int>(cropped.size()) > maxBatchSize) {
+	  break;
+	}	
     }
 
     if (!cropped.size()) {
@@ -838,7 +840,7 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     subnet->doInference(static_cast<int>(cropped.size()));
 
     int actual_batch_size = 0;
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
 
@@ -860,15 +862,15 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
         }
         subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
         actual_batch_size++;
-    }
+	if (static_cast<int>(actual_batch_size) >= maxBatchSize) {
+	  break;
+	}		
+    }    
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
-
-
   
 
-  
   /**
    * @brief Perform inference with the TrtLightnet model.
    * 
@@ -912,57 +914,57 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     }
   }
   
- /**
- * @brief Retrieve the bounding boxes detected by the subnet in a C-compatible array.
- * 
- * @param instance Pointer to the main TrtLightnet instance.
- * @param size Output parameter for the size of the bounding box array.
- * @return Pointer to an array of BBoxInfoC.
- */
-BBoxInfoC* get_subnet_bbox_array(void* instance, int* size) {
+  /**
+   * @brief Retrieve the bounding boxes detected by the subnet in a C-compatible array.
+   * 
+   * @param instance Pointer to the main TrtLightnet instance.
+   * @param size Output parameter for the size of the bounding box array.
+   * @return Pointer to an array of BBoxInfoC.
+   */
+  BBoxInfoC* get_subnet_bbox_array(void* instance, int* size) {
     if (!instance) {
-        std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
-        return nullptr;
+      std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
+      return nullptr;
     }
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     std::vector<tensorrt_lightnet::BBoxInfo> bbox_ = lightnet->getSubnetBbox();
 
     bbox_c_array.clear();
     for (const auto& bbox : bbox_) {
-        BBoxInfoC bbox_c;
-        bbox_c.box = {bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2};
-        bbox_c.label = bbox.label;
-        bbox_c.classId = bbox.classId;
-        bbox_c.prob = bbox.prob;
-        bbox_c.isHierarchical = bbox.isHierarchical;
-        bbox_c.subClassId = bbox.subClassId;
-        bbox_c.sin = bbox.sin;
-        bbox_c.cos = bbox.cos;
+      BBoxInfoC bbox_c;
+      bbox_c.box = {bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2};
+      bbox_c.label = bbox.label;
+      bbox_c.classId = bbox.classId;
+      bbox_c.prob = bbox.prob;
+      bbox_c.isHierarchical = bbox.isHierarchical;
+      bbox_c.subClassId = bbox.subClassId;
+      bbox_c.sin = bbox.sin;
+      bbox_c.cos = bbox.cos;
 
-        bbox_c.num_keypoints = bbox.keypoint.size();
-        static std::vector<KeypointInfoC> keypoints_c;
-        keypoints_c.clear();
-        for (const auto& kp : bbox.keypoint) {
-            keypoints_c.push_back({kp.id_prob, kp.isOccluded, kp.attr_prob,
-                kp.lx0, kp.ly0, kp.lx1, kp.ly1, kp.rx0, kp.ry0, kp.rx1, kp.ry1, kp.bot, kp.left});
-        }
-        bbox_c.keypoints = keypoints_c.data();
-        bbox_c_array.push_back(bbox_c);
+      bbox_c.num_keypoints = bbox.keypoint.size();
+      static std::vector<KeypointInfoC> keypoints_c;
+      keypoints_c.clear();
+      for (const auto& kp : bbox.keypoint) {
+	keypoints_c.push_back({kp.id_prob, kp.isOccluded, kp.attr_prob,
+	    kp.lx0, kp.ly0, kp.lx1, kp.ly1, kp.rx0, kp.ry0, kp.rx1, kp.ry1, kp.bot, kp.left});
+      }
+      bbox_c.keypoints = keypoints_c.data();
+      bbox_c_array.push_back(bbox_c);
     }
     *size = bbox_c_array.size();
     return bbox_c_array.data();
-}
+  }
 
-/**
- * @brief Apply a blur effect to image regions based on bounding boxes detected by the subnet.
- * 
- * @param instance Pointer to the main TrtLightnet instance.
- * @param sub_instance Pointer to the subnet TrtLightnet instance.
- * @param img_data Image data in BGR format.
- * @param width Image width.
- * @param height Image height.
- */
-void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int width, int height) {
+  /**
+   * @brief Apply a blur effect to image regions based on bounding boxes detected by the subnet.
+   * 
+   * @param instance Pointer to the main TrtLightnet instance.
+   * @param sub_instance Pointer to the subnet TrtLightnet instance.
+   * @param img_data Image data in BGR format.
+   * @param width Image width.
+   * @param height Image height.
+   */
+  void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int width, int height) {
     cv::Mat image(height, width, CV_8UC3, img_data);
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     auto subnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(sub_instance);    
@@ -975,52 +977,174 @@ void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int
 
     int num = static_cast<int>(bbox.size());
     for (int i = 0; i < num; i++) {
-        auto b = bbox[i];
-        bool flg = false;
-        for (auto &t : subnet_names) {
-            if (t == names[b.classId]) {
-                flg = true;
-                break;
-            }
-        }
-        if (!flg) continue;
+      auto b = bbox[i];
+      bool flg = false;
+      for (auto &t : subnet_names) {
+	if (t == names[b.classId]) {
+	  flg = true;
+	  break;
+	}
+      }
+      if (!flg) continue;
 
-        int subnet_id = -1;
-        for (int j = 0; j < static_cast<int>(subnet_names.size()); j++) {
-            if (names[b.classId] == subnet_names[j]) {
-                subnet_id = j;
-                break;
-            }
-        }
-        if (subnet_id != -1) {
-            b.label = subnet_id;
-            b.classId = subnet_id;    
-            auto bb = {b};
-            lightnet->appendSubnetBbox(bb);
-        }    
+      int subnet_id = -1;
+      for (int j = 0; j < static_cast<int>(subnet_names.size()); j++) {
+	if (names[b.classId] == subnet_names[j]) {
+	  subnet_id = j;
+	  break;
+	}
+      }
+      if (subnet_id != -1) {
+	b.label = subnet_id;
+	b.classId = subnet_id;    
+	auto bb = {b};
+	lightnet->appendSubnetBbox(bb);
+      }    
     }
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 
     std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = lightnet->getSubnetBbox();
 
     for (auto &b : subnet_bbox) {
-        if ((b.box.x2 - b.box.x1) > kernel && (b.box.y2 - b.box.y1) > kernel / 2) {
-            int width = b.box.x2 - b.box.x1;
-            int height = b.box.y2 - b.box.y1;
-            int w_offset = width * 0.0;
-            int h_offset = height * 0.0;      
-            cv::Rect roi(b.box.x1 + w_offset, b.box.y1 + h_offset, width - w_offset * 2, height - h_offset * 2);
-            cropped = image(roi);
+      if ((b.box.x2 - b.box.x1) > kernel && (b.box.y2 - b.box.y1) > kernel / 2) {
+	int width = b.box.x2 - b.box.x1;
+	int height = b.box.y2 - b.box.y1;
+	int w_offset = width * 0.0;
+	int h_offset = height * 0.0;      
+	cv::Rect roi(b.box.x1 + w_offset, b.box.y1 + h_offset, width - w_offset * 2, height - h_offset * 2);
+	cropped = image(roi);
 
-            if (width > 320 && height > 320) {
-                cv::blur(cropped, cropped, cv::Size(kernel * 16, kernel * 16));
-            } else if (width > 160 && height > 160) {
-                cv::blur(cropped, cropped, cv::Size(kernel * 8, kernel * 8));
-            } else {
-                cv::blur(cropped, cropped, cv::Size(kernel, kernel));
-            }
-        }
+	if (width > 320 && height > 320) {
+	  cv::blur(cropped, cropped, cv::Size(kernel * 16, kernel * 16));
+	} else if (width > 160 && height > 160) {
+	  cv::blur(cropped, cropped, cv::Size(kernel * 8, kernel * 8));
+	} else {
+	  cv::blur(cropped, cropped, cv::Size(kernel, kernel));
+	}
+      }
     }
-}  
+  }
+
+  /**
+   * @brief Computes entropy maps from softmax outputs for a given TrtLightnet instance.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   */
+  void makeEntropy(void* instance) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to makeEntropy." << std::endl;
+      return;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    lightnet->calcEntropyFromSoftmax();
+  }
+
+  /**
+   * @brief Retrieves the vector of entropy visualization maps (as cv::Mat) from a TrtLightnet instance.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   * @return Pointer to a newly allocated std::vector<cv::Mat> holding the entropy maps.
+   */
+  std::vector<cv::Mat>* get_entropy_maps(void* instance) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to get_entropy_maps." << std::endl;
+      return nullptr;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    return new std::vector<cv::Mat>(lightnet->getEntropymaps());
+  }
+
+  /**
+   * @brief Returns the number of entropy maps in the provided vector.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @return The number of elements in the vector, or 0 if null.
+   */
+  size_t get_entropy_count(std::vector<cv::Mat>* entropy_maps) {
+    return entropy_maps ? entropy_maps->size() : 0;
+  }
+
+  /**
+   * @brief Returns a pointer to the pixel data of a specific entropy map.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @param index Index of the map to retrieve.
+   * @return Pointer to the image data, or nullptr if invalid.
+   */
+  uint8_t* get_entropy_data(std::vector<cv::Mat>* entropy_maps, size_t index) {
+    if (!entropy_maps || index >= entropy_maps->size()) return nullptr;
+    return entropy_maps->at(index).data;
+  }
+
+  /**
+   * @brief Retrieves the shape (rows, cols, channels) of a specific entropy map.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @param index Index of the map.
+   * @param rows Pointer to an int where the number of rows will be stored.
+   * @param cols Pointer to an int where the number of columns will be stored.
+   * @param channels Pointer to an int where the number of channels will be stored.
+   */
+  void get_entropy_shape(std::vector<cv::Mat>* entropy_maps, size_t index,
+			 int* rows, int* cols, int* channels) {
+    if (!entropy_maps || index >= entropy_maps->size()) return;
+    const auto& mat = entropy_maps->at(index);
+    *rows = mat.rows;
+    *cols = mat.cols;
+    *channels = mat.channels();
+  }
+
+  /**
+   * @brief Frees the memory allocated for a vector of entropy maps.
+   * 
+   * @param entropy_maps Pointer to the vector to be deleted.
+   */
+  void free_entropy_maps(std::vector<cv::Mat>* entropy_maps) {
+    delete entropy_maps;
+  }
+
+  /**
+   * @brief Retrieves the entropy values (per-channel average entropy) as a 2D float array.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   * @param data Output pointer to allocated flat float array (caller must free).
+   * @param outer_size Output: number of outer elements (e.g., softmax heads).
+   * @param inner_size Output: number of channels per head.
+   */
+  void get_entropies(void* instance, float** data, int* outer_size, int* inner_size) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to get_entropies." << std::endl;
+      return;
+    }
+
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    const auto& ent = lightnet->getEntropies();
+
+    *outer_size = static_cast<int>(ent.size());
+    *inner_size = ent.empty() ? 0 : static_cast<int>(ent[0].size());
+
+    *data = static_cast<float*>(malloc((*outer_size) * (*inner_size) * sizeof(float)));
+    if (!*data) {
+      std::cerr << "Error: Failed to allocate memory in get_entropies." << std::endl;
+      return;
+    }
+
+    for (int i = 0; i < *outer_size; ++i) {
+      for (int j = 0; j < *inner_size; ++j) {
+	(*data)[i * (*inner_size) + j] = ent[i][j];
+      }
+    }
+  }
+
+  /**
+   * @brief Frees the memory allocated for the entropy array returned by get_entropies().
+   * 
+   * @param data Pointer to the float array to be freed.
+   */
+  void free_entropies(float* data) {
+    if (data) {
+      free(data);
+    }
+  }  
 }
 

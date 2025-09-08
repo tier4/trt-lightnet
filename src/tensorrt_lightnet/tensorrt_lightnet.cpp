@@ -399,6 +399,8 @@ namespace tensorrt_lightnet
 	  h_entropy_ = cuda_utils::make_unique_host<float[]>(src_size, cudaHostAllocPortable);	  
 	  //CHECK_CUDA_ERROR(cudaMallocHost((void **)&h_entropy_, sizeof(float) * src_size));
 	  d_entropy_ = cuda_utils::make_unique<float[]>(src_size);
+	  h_peakEntropy_u8_ = cuda_utils::make_unique_host<unsigned char[]>(outputH * outputW, cudaHostAllocPortable);	  	  
+	  d_peakEntropy_u8_ = cuda_utils::make_unique<unsigned char[]>(outputH * outputW);	  
 	}
       }
     }
@@ -2347,88 +2349,85 @@ namespace tensorrt_lightnet
     }
   }
 
-
-  /**
-   * @brief This function calculates the entropy maps from the softmax output of the network.
-   * It identifies the tensors that are not related to bounding box detections and processes 
-   * the tensors whose names contain "softmax". The function computes the entropy for each 
-   * channel and stores the entropy maps.
-   */    
-  void TrtLightnet::calcEntropyFromSoftmax(void)
+/**
+ * @brief Calculates entropy maps from softmax outputs.
+ *
+ * This function processes network output tensors whose names contain "softmax"
+ * and whose channel size does not match that of bounding box detection outputs.
+ * It computes entropy values for each channel and generates both scalar and color-mapped
+ * entropy maps for visualization.
+ */
+  void TrtLightnet::calcEntropyFromSoftmax()
   {
-    // Formula to identify output tensors not related to bounding box detections.
-    int chan_size = (4 + 1 + num_class_) * num_anchor_;
+    // Channel size of detection output = (4 + 1 + num_class_) * num_anchor_
+    const int det_chan_size = (4 + 1 + num_class_) * num_anchor_;
     entropies_.clear();
     ent_maps_.clear();
-    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+
+    for (int i = 1; i < trt_common_->getNbBindings(); ++i) {
       const auto dims = trt_common_->getBindingDimensions(i);
       const int outputW = dims.d[3];
       const int outputH = dims.d[2];
-      const int chan = dims.d[1];
-      // Identifying tensors by channel size and name for segmentation masks.      
-      if (chan_size != chan) {
-	std::string name = trt_common_->getIOTensorName(i);
-	if (contain(name, "softmax")) { // Check if tensor name contains "softmax".
-	  cv::Mat vis = cv::Mat::zeros(outputH, outputW, CV_8UC1);
-	  cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);	  	  
-	  std::vector<cv::Mat> entropy_maps(chan);
-	  std::vector<float> entropy(chan, 0.0f);
-	  for (int c = 0; c < chan; ++c) {
-	    entropy_maps[c] = cv::Mat::zeros(outputH, outputW, CV_32FC1);
+      const int chan    = dims.d[1];
+
+      if (chan == det_chan_size) continue;
+
+      const std::string name = trt_common_->getIOTensorName(i);
+      if (!contain(name, "softmax")) continue;
+
+      // Setup buffers
+      cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+      std::vector<float> entropy(chan, 0.0f);
+
+      // Compute entropy map on GPU
+      computeEntropyMapGpu((float*)output_d_.at(i - 1).get(), d_entropy_.get(),
+			   chan, outputH, outputW, *stream_);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(h_entropy_.get(), d_entropy_.get(),
+				       chan * outputH * outputW * sizeof(float),
+				       cudaMemcpyDeviceToHost, *stream_));
+      cudaStreamSynchronize(*stream_);
+
+      // Aggregate entropy
+
+      for (int c = 0; c < chan; ++c) {
+	for (int y = 0; y < outputH; ++y) {
+	  for (int x = 0; x < outputW; ++x) {
+	    int idx = c * outputH * outputW + y * outputW + x;
+	    entropy[c] += h_entropy_[idx];
 	  }
-
-	  std::chrono::high_resolution_clock::time_point start, end;
-	  start = std::chrono::high_resolution_clock::now();
-
-	  computeEntropyMapGpu((float *)output_d_.at(i-1).get(), d_entropy_.get(),
-			       chan, outputH, outputW, *stream_);
-
-	  CHECK_CUDA_ERROR(cudaMemcpyAsync(h_entropy_.get(), d_entropy_.get(), outputW * outputH * chan * sizeof(float), cudaMemcpyDeviceToHost, *stream_));
-	  cudaStreamSynchronize(*stream_); 
-
-	  end = std::chrono::high_resolution_clock::now();
-	  std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-	  std::cout << "##Entropuy: " << duration.count() << " ms " << std::endl;
-
-	  start = std::chrono::high_resolution_clock::now();
-	  //#pragma omp parallel for schedule(static, 2a) num_threads(2)    	  
-	  for (int y = 0; y < outputH; y++) {
-	    for (int x = 0; x < outputW; x++) {
-	      for (int c = 0; c < chan; c++) {	  
-		//float ent = entropy_maps[c].at<float>(y, x);
-		int index = c * outputH * outputW + outputW * y + x;
-		float ent = h_entropy_[index] ;				
-		entropy[c] += ent;
-		//vis.at<unsigned char>(y, x) += (unsigned char)(255 * ent)/chan;		
-		vis.at<unsigned char>(y, x) = (vis.at<unsigned char>(y, x) < (unsigned char)(255 * ent)) ? (unsigned char)(255 * ent) : vis.at<unsigned char>(y, x);		
-	      }
-	    }
-	  }
-	  end = std::chrono::high_resolution_clock::now();
-	  duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-	  std::cout << "##visalize: " << duration.count() << " ms " << std::endl;
-	  
-	  for (int c = 0; c < chan; c++) {
-	    entropy[c] /= (outputH * outputW);
-	  }	  
-	  for (int c = 0; c < chan; c++) {	    
-	    std::cout << "Entropy (" << c  << ") " << entropy[c] <<std::endl;
-	  }
-	  
-	  entropies_.push_back(entropy);
-	  for (int y = 0; y < outputH; y++) {
-	    for (int x = 0; x < outputW; x++) {
-	      const auto &color = jet_colormap[vis.at<unsigned char>(y, x)];	      
-	      ent_map.at<cv::Vec3b>(y, x)[0] = color[0];
-	      ent_map.at<cv::Vec3b>(y, x)[1] = color[1];
-	      ent_map.at<cv::Vec3b>(y, x)[2] = color[2];
-	    }
-	  }
-	  ent_maps_.push_back(ent_map);
 	}
       }
+
+      // Normalize entropy per channel
+      for (auto& val : entropy) {
+	val /= (outputH * outputW);
+      }
+
+      // Zero-clear device buffer and compute peak entropy
+      CHECK_CUDA_ERROR(cudaMemset(d_peakEntropy_u8_.get(), 0, outputH * outputW * sizeof(uint8_t)));
+      launchComputePeakEntropyMap((float*)d_entropy_.get(), d_peakEntropy_u8_.get(),
+				  chan, outputH, outputW, *stream_);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(h_peakEntropy_u8_.get(), d_peakEntropy_u8_.get(),
+				       outputH * outputW * sizeof(uint8_t),
+				       cudaMemcpyDeviceToHost, *stream_));
+      cudaStreamSynchronize(*stream_);
+
+      // Visualize entropy using colormap
+      const auto* peak_entropy = h_peakEntropy_u8_.get();
+      for (int y = 0; y < outputH; ++y) {
+	for (int x = 0; x < outputW; ++x) {
+	  const auto& color = jet_colormap[peak_entropy[y * outputW + x]];
+	  auto& pixel = ent_map.at<cv::Vec3b>(y, x);
+	  pixel[0] = color[0];
+	  pixel[1] = color[1];
+	  pixel[2] = color[2];
+	}
+      }
+      entropies_.push_back(std::move(entropy));
+      ent_maps_.push_back(std::move(ent_map));
     }
   }
+  
 
   /**
    * @brief This function returns the calculated entropy maps.
