@@ -11,6 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <NvInferVersion.h>
+// Define a single macro for version comparison
+#ifndef TRT_VER_NUM
+#  define TRT_VER_NUM (NV_TENSORRT_MAJOR * 1000 + NV_TENSORRT_MINOR * 100 + NV_TENSORRT_PATCH)
+#endif
 
 #ifndef TENSORRT_COMMON__TENSORRT_COMMON_HPP_
 #define TENSORRT_COMMON__TENSORRT_COMMON_HPP_
@@ -33,12 +38,14 @@ namespace fs = ::std::experimental::filesystem;
 #include <tensorrt_common/logger.hpp>
 #include <tensorrt_common/simple_profiler.hpp>
 
+
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <cstring>
-
+#include <array>
+#include <string_view>
   
 namespace tensorrt_common
 {
@@ -120,10 +127,10 @@ bool is_valid_precision_string(const std::string & precision);
 template <typename T>
 struct InferDeleter  // NOLINT
 {
-  void operator()(T * obj) const
+  void operator()(T * obj) const noexcept
   {
     if (obj) {
-#if TENSORRT_VERSION_MAJOR >= 8
+#if TRT_VER_NUM >= 8000
       delete obj;
 #else
       obj->destroy();
@@ -208,7 +215,7 @@ public:
    */
   void printProfiling(void);
 
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+#if TRT_VER_NUM >= 8200
   /**
    * @brief get per-layer information for trt-engine-profiler
    */
