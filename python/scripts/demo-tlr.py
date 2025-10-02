@@ -80,6 +80,7 @@ def demo(video_path, config_path):
     cv2.destroyAllWindows()
     lightnet.destroy()
 
+
 if __name__ == "__main__":
     args = parse_args()
     demo(args.video, args.flagfile)
