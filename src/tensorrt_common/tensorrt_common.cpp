@@ -282,7 +282,8 @@ void TrtCommon::setup()
   if (build_config_->profile_per_layer) {
     context_->setProfiler(&model_profiler_);
   }
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+
+#if TRT_VER_NUM >= 8200
   // Write profiles for trt-engine-explorer
   // See: https://github.com/NVIDIA/TensorRT/tree/main/tools/experimental/trt-engine-explorer
   std::string j_ext = ".json";
@@ -302,7 +303,7 @@ bool TrtCommon::loadEngine(const std::string & engine_file_path)
   std::stringstream engine_buffer;
   engine_buffer << engine_file.rdbuf();
   std::string engine_str = engine_buffer.str();
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8600
+#if TRT_VER_NUM >= 8600  
   if (!runtime_->getEngineHostCodeAllowed()) {
     runtime_->setEngineHostCodeAllowed(true);
   }
@@ -343,7 +344,7 @@ void TrtCommon::printNetworkInfo(const std::string & onnx_file_path)
   if (precision_ == "fp16" || precision_ == "int8") {
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
   }
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8400
+#if TRT_VER_NUM >= 8400  
   config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, max_workspace_size_);
 #else
   config->setMaxWorkspaceSize(max_workspace_size_);
@@ -463,7 +464,7 @@ bool TrtCommon::buildEngineFromOnnx(
     }
     config->setDefaultDeviceType(nvinfer1::DeviceType::kDLA);
     config->setDLACore(build_config_->dla_core_id);
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+#if TRT_VER_NUM >= 8200    
     config->setFlag(nvinfer1::BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
 #else
     config->setFlag(nvinfer1::BuilderFlag::kSTRICT_TYPES);
@@ -478,7 +479,7 @@ bool TrtCommon::buildEngineFromOnnx(
   if (precision_ == "fp16" || precision_ == "int8") {
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
   }
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8400
+#if TRT_VER_NUM >= 8400  
   config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, max_workspace_size_);
 #else
   config->setMaxWorkspaceSize(max_workspace_size_);
@@ -559,13 +560,15 @@ bool TrtCommon::buildEngineFromOnnx(
   const auto input_dims = input->getDimensions();
   const auto input_batch = input_dims.d[0];
 
-  if (input_batch > 1) {
+  if (input_batch > 1) {    
     batch_config_[0] = input_batch;
   }
 
   if (batch_config_.at(0) > 1 && (batch_config_.at(0) == batch_config_.at(2))) {
+#if TRT_VER_NUM < 10000
     // Attention : below API is deprecated in TRT8.4
     builder->setMaxBatchSize(batch_config_.at(2));
+#endif
   } else {
     auto opt_prof = builder->createOptimizationProfile();
     const auto num_input_layers = network->getNbInputs();
@@ -596,7 +599,7 @@ bool TrtCommon::buildEngineFromOnnx(
   }
   if (precision_ == "int8" && calibrator_) {
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+#if TRT_VER_NUM >= 8200    
     config->setFlag(nvinfer1::BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
 #else
     config->setFlag(nvinfer1::BuilderFlag::kSTRICT_TYPES);
@@ -606,7 +609,7 @@ bool TrtCommon::buildEngineFromOnnx(
     config->setInt8Calibrator(calibrator_.get());
   }
   if (build_config_->profile_per_layer) {
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+#if TRT_VER_NUM >= 8200    
     config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
 #else
     config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kVERBOSE);
@@ -630,49 +633,79 @@ bool TrtCommon::buildEngineFromOnnx(
       isAmperePlus = true; 
     }
   }
-  
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8600
+
+#if TRT_VER_NUM >= 8600  
   if (isAmperePlus) {
     config->setFlag(nvinfer1::BuilderFlag::kVERSION_COMPATIBLE);
     config->setHardwareCompatibilityLevel(nvinfer1::HardwareCompatibilityLevel::kAMPERE_PLUS);
-  }
+  } 
 #endif
 
-#if TENSORRT_VERSION_MAJOR >= 8
-  auto plan =
-    TrtUniquePtr<nvinfer1::IHostMemory>(builder->buildSerializedNetwork(*network, *config));
-  if (!plan) {
-    logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to create host memory");
-    return false;
+#if TRT_VER_NUM >= 8000
+  // --- TRT8/9/10 path: build serialized network, optionally save, then deserialize ---
+
+  auto plan = TrtUniquePtr<nvinfer1::IHostMemory>(
+						  builder->buildSerializedNetwork(*network, *config));
+  if (!plan)
+    {
+      logger_.log(nvinfer1::ILogger::Severity::kERROR, "buildSerializedNetwork failed");
+      return false;
+    }
+
+  // Save the serialized plan to file
+  {
+    std::ofstream ofs(output_engine_file_path, std::ios::binary);
+    if (!ofs.is_open())
+      return false;
+    ofs.write(static_cast<const char*>(plan->data()), plan->size());
   }
-  engine_ = TrtUniquePtr<nvinfer1::ICudaEngine>(
-    runtime_->deserializeCudaEngine(plan->data(), plan->size()));
+
+  // Create runtime -> allow host code -> deserialize engine
+  if (!runtime_)
+    {
+      runtime_.reset(nvinfer1::createInferRuntime(logger_));
+      if (!runtime_)
+	{
+	  logger_.log(nvinfer1::ILogger::Severity::kERROR, "createInferRuntime failed");
+	  return false;
+	}
+    }
+  runtime_->setEngineHostCodeAllowed(true);  // Must be set before deserialize
+
+  engine_.reset(runtime_->deserializeCudaEngine(plan->data(), plan->size()));
+  if (!engine_)
+    {
+      logger_.log(nvinfer1::ILogger::Severity::kERROR, "deserializeCudaEngine failed");
+      return false;
+    }
+
 #else
-  engine_ = TrtUniquePtr<nvinfer1::ICudaEngine>(builder->buildEngineWithConfig(*network, *config));
-#endif
+  // --- Legacy path (TRT7 and older): directly build engine, then serialize to save ---
 
-  if (!engine_) {
-    logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to create engine");
-    return false;
-  }
+  engine_.reset(builder->buildEngineWithConfig(*network, *config));
+  if (!engine_)
+    {
+      logger_.log(nvinfer1::ILogger::Severity::kERROR, "buildEngineWithConfig failed");
+      return false;
+    }
 
-  // save engine
-#if TENSORRT_VERSION_MAJOR < 8
+  // Serialize the engine object to host memory
   auto data = TrtUniquePtr<nvinfer1::IHostMemory>(engine_->serialize());
-#endif
-  std::ofstream file;
-  file.open(output_engine_file_path, std::ios::binary | std::ios::out);
-  if (!file.is_open()) {
-    return false;
+  if (!data)
+    {
+      logger_.log(nvinfer1::ILogger::Severity::kERROR, "engine->serialize failed");
+      return false;
+    }
+
+  // Save the serialized engine to file
+  {
+    std::ofstream ofs(output_engine_file_path, std::ios::binary);
+    if (!ofs.is_open())
+      return false;
+    ofs.write(static_cast<const char*>(data->data()), data->size());
   }
-#if TENSORRT_VERSION_MAJOR < 8
-  file.write(reinterpret_cast<const char *>(data->data()), data->size());
-#else
-  file.write(reinterpret_cast<const char *>(plan->data()), plan->size());
 #endif
-
-  file.close();
-
+  
   return true;
 }
 
@@ -683,12 +716,17 @@ bool TrtCommon::isInitialized()
 
 nvinfer1::DataType TrtCommon::getBindingDataType(const int32_t index) const
 {
+#if TRT_VER_NUM >= 10000  
+  const char* name = engine_->getIOTensorName(index);
+  return engine_->getTensorDataType(name);
+#else   
   return engine_->getBindingDataType(index);
+#endif  
 }
 
 nvinfer1::Dims TrtCommon::getBindingDimensions(const int32_t index) const
 {
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + (NV_TENSOR_PATCH * 10) >= 8500
+#if TRT_VER_NUM >= 8500  
   auto const & name = engine_->getIOTensorName(index);
   auto dims = context_->getTensorShape(name);
   bool const has_runtime_dim =
@@ -697,7 +735,11 @@ nvinfer1::Dims TrtCommon::getBindingDimensions(const int32_t index) const
   if (has_runtime_dim) {
     return dims;
   } else {
+#if TRT_VER_NUM >= 10000    
+    return context_->getTensorShape(name);
+#else
     return context_->getBindingDimensions(index);
+#endif    
   }
 #else
   return context_->getBindingDimensions(index);
@@ -706,7 +748,11 @@ nvinfer1::Dims TrtCommon::getBindingDimensions(const int32_t index) const
 
 int32_t TrtCommon::getNbBindings()
 {
+#if TRT_VER_NUM >= 10000  
+  return engine_->getNbIOTensors();  
+#else  
   return engine_->getNbBindings();
+#endif  
 }
 
 std::string TrtCommon::getIOTensorName(const int32_t index)
@@ -716,23 +762,50 @@ std::string TrtCommon::getIOTensorName(const int32_t index)
 
 bool TrtCommon::setBindingDimensions(const int32_t index, const nvinfer1::Dims & dimensions) const
 {
+#if TRT_VER_NUM >= 10000  
+  const char* name = engine_->getIOTensorName(index);
+  return context_->setInputShape(name, dimensions);
+#else  
   return context_->setBindingDimensions(index, dimensions);
+#endif  
 }
 
-bool TrtCommon::enqueueV2(void ** bindings, cudaStream_t stream, cudaEvent_t * input_consumed)
+bool TrtCommon::enqueueV2(void** bindings, cudaStream_t stream, cudaEvent_t* input_consumed)
 {
   if (build_config_->profile_per_layer) {
     auto inference_start = std::chrono::high_resolution_clock::now();
-
+#if TRT_VER_NUM >= 10000    
+    (void)input_consumed; 
+    const int nb = getNbBindings();
+    for (int i = 0; i < nb; ++i) {
+      using _GetName = const char* (nvinfer1::ICudaEngine::*)(int32_t) const;
+      const auto _fn = static_cast<_GetName>(&nvinfer1::ICudaEngine::getIOTensorName);
+      const char* name = (engine_.get()->*_fn)(static_cast<int32_t>(i));  
+      context_->setTensorAddress(name, bindings[i]);
+    }
+    bool ret = context_->enqueueV3(stream);
+#else
     bool ret = context_->enqueueV2(bindings, stream, input_consumed);
-
+#endif
     auto inference_end = std::chrono::high_resolution_clock::now();
     host_profiler_.reportLayerTime(
-      "inference",
-      std::chrono::duration<float, std::milli>(inference_end - inference_start).count());
+				   "inference",
+				   std::chrono::duration<float, std::milli>(inference_end - inference_start).count());
     return ret;
   } else {
+#if TRT_VER_NUM >= 10000    
+    (void)input_consumed; 
+    const int nb = getNbBindings();
+    for (int i = 0; i < nb; ++i) {
+      using _GetName = const char* (nvinfer1::ICudaEngine::*)(int32_t) const;
+      const auto _fn = static_cast<_GetName>(&nvinfer1::ICudaEngine::getIOTensorName);
+      const char* name = (engine_.get()->*_fn)(static_cast<int32_t>(i));  
+      context_->setTensorAddress(name, bindings[i]);
+    }
+    return context_->enqueueV3(stream);
+#else
     return context_->enqueueV2(bindings, stream, input_consumed);
+#endif
   }
 }
 
@@ -743,7 +816,7 @@ void TrtCommon::printProfiling()
   std::cout << model_profiler_;
 }
 
-#if (NV_TENSORRT_MAJOR * 1000) + (NV_TENSORRT_MINOR * 100) + NV_TENSOR_PATCH >= 8200
+#if TRT_VER_NUM >= 8200
 std::string TrtCommon::getLayerInformation(nvinfer1::LayerInformationFormat format)
 {
   auto runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger_));
@@ -786,7 +859,14 @@ std::string TrtCommon::dataType2String(nvinfer1::DataType dataType) const
 
 bool TrtCommon::bindingIsInput(const int32_t index) const
 {
+#if TRT_VER_NUM >= 10000
+  using _GetName = const char* (nvinfer1::ICudaEngine::*)(int32_t) const;
+  const auto _fn = static_cast<_GetName>(&nvinfer1::ICudaEngine::getIOTensorName);
+  const char* name = (engine_.get()->*_fn)(static_cast<int32_t>(index));
+  return engine_->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT;
+#else  
   return engine_->bindingIsInput(index);
+#endif  
 }
 
 std::vector<std::string> TrtCommon::getDebugTensorNames(void)
