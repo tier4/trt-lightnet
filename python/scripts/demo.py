@@ -23,12 +23,14 @@ def parse_args():
         description="Run inference on a video using PyLightNet."
     )
     parser.add_argument(
-        "-v", "--video", required=True, type=str,
-        help="Path to the input video file"
+        "-v", "--video", required=True, type=str, help="Path to the input video file"
     )
     parser.add_argument(
-        "-f", "--flagfile", required=True, type=str,
-        help="Path to the configuration (flag) file"
+        "-f",
+        "--flagfile",
+        required=True,
+        type=str,
+        help="Path to the configuration (flag) file",
     )
     return parser.parse_args()
 
@@ -45,7 +47,9 @@ def demo(video_path, config_path):
     colormap = pylightnet.load_colormap_from_file(config["rgb"])
     lightnet = pylightnet.create_lightnet_from_config(config)
 
-    seg_data = pylightnet.load_segmentation_data(config["mask"]) if "mask" in config else None
+    seg_data = (
+        pylightnet.load_segmentation_data(config["mask"]) if "mask" in config else None
+    )
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
