@@ -786,7 +786,7 @@ public:
    * the tensors whose names contain "softmax". The function computes the entropy for each 
    * channel and stores the entropy maps.
    */
-  void calcEntropyFromSoftmax(void);
+  void calcEntropyFromSoftmax(const bool is_grayscale = false);
 
   /**
    * @brief This function returns the calculated entropy maps.

@@ -1036,7 +1036,7 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
       return;
     }
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
-    lightnet->calcEntropyFromSoftmax();
+    lightnet->calcEntropyFromSoftmax(true);
   }
 
   /**

@@ -45,6 +45,7 @@ def demo(video_path, config_path):
     config = pylightnet.load_config(config_path)
     names = pylightnet.load_names_from_file(config["names"])
     colormap = pylightnet.load_colormap_from_file(config["rgb"])
+    mask_dict = pylightnet.load_segmentation_data(config["mask"])
     lightnet = pylightnet.create_lightnet_from_config(config)
 
     seg_data = (
@@ -82,8 +83,13 @@ def demo(video_path, config_path):
         if "entropy" in config:
             lightnet.make_entropy()
             entropies = lightnet.get_entropies()
-            print("Entropy values:", entropies)
-
+            results = {}
+            for index in sorted(mask_dict.keys()):
+                mask_name = mask_dict[index]['name']
+                entropy = entropies[0][index]
+                results[mask_name] = entropy
+            print("Entropy values:", results)
+                
             entropy_maps = lightnet.get_entropy_maps_from_cpp()
             for i, emap in enumerate(entropy_maps):
                 cv2.imshow(f"Entropy_{i}", emap)
