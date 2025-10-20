@@ -706,6 +706,10 @@ class TrtLightnet:
         )
         result_str = result_ptr.decode("utf-8")
         image_annotations = json.loads(result_str)
+        self.make_entropy()
+        entropies = self.get_entropies()
+        if len(entropies) > 0 :
+            image_annotations['uncertainty'] = entropies[0].tolist()
         return image_annotations
 
     def make_entropy(self):
