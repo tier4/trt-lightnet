@@ -36,9 +36,12 @@ class CustomBuild(build):
 
 
 class BuildLightnetInfer(Command):
-    """Custom command to execute Makefile steps for building liblightnetinfer.so."""
+    """Custom command to build liblightnetinfer.so using CMake.
 
-    description = "Build liblightnetinfer.so using Makefile steps"
+    Reuses libcnpy.so from CMake build instead of building separately.
+    """
+
+    description = "Build liblightnetinfer.so using CMake"
     user_options = []
 
     def initialize_options(self):
@@ -49,54 +52,51 @@ class BuildLightnetInfer(Command):
         """Post-process options."""
         pass
 
-    def _clone_cnpy(self, cnpy_dir):
-        """Clone cnpy repository.
+    def _find_libcnpy(self, build_dir):
+        """Locate libcnpy.so from CMake build or system installation.
 
         Args:
-            cnpy_dir (str): Path to clone cnpy repository.
+            build_dir (str): Path to CMake build directory
 
+        Returns:
+            str: Absolute path to libcnpy.so
+
+        Raises:
+            FileNotFoundError: If libcnpy.so not found in any search path
         """
-        try:
-            subprocess.check_call(
-                ["git", "clone", "https://github.com/rogersce/cnpy.git", cnpy_dir],
-            )
-        except subprocess.CalledProcessError as e:
-            print(f"Error cloning cnpy: {e}")
-            raise
+        search_paths = [
+            # FetchContent build directory
+            os.path.join(build_dir, "_deps", "cnpy-build", "libcnpy.so"),
+            # System installation paths
+            "/usr/local/lib/libcnpy.so",
+            "/usr/lib/x86_64-linux-gnu/libcnpy.so",
+        ]
+
+        for path in search_paths:
+            if os.path.exists(path):
+                print(f"Found libcnpy.so at: {path}")
+                return path
+
+        # If not found, raise detailed error
+        error_msg = (
+            "Error: libcnpy.so not found in any of the following paths:\n"
+            + "\n".join(f"  - {p}" for p in search_paths)
+            + "\n\nTo resolve this issue, try one of the following:\n"
+            + "1. Install cnpy system-wide:\n"
+            + "   git clone https://github.com/rogersce/cnpy.git\n"
+            + "   cd cnpy && mkdir build && cd build\n"
+            + "   cmake .. && make && sudo make install\n"
+            + "2. Ensure CMakeLists.txt FetchContent is enabled (FETCH_CNPY_IF_MISSING=ON)\n"
+            + f"3. Check CMake build logs in {build_dir} for errors\n"
+        )
+        raise FileNotFoundError(error_msg)
 
     def run(self):
-        """Build liblightnetinfer.so."""
+        """Build lightnetinfer library and copy required .so files to package."""
         setup_root_dir = os.path.dirname(os.path.realpath(__file__))
         pylightnet_dir = os.path.join(setup_root_dir, "pylightnet")
-        cnpy_dir = os.path.join(setup_root_dir, "cnpy")
-        if os.path.exists(cnpy_dir):
-            shutil.rmtree(cnpy_dir)
-        self._clone_cnpy(cnpy_dir)
 
         try:
-            cnpy_build_dir = os.path.join(cnpy_dir, "build")
-            os.makedirs(cnpy_build_dir)
-
-            # Run cmake and make within cnpy/build
-            subprocess.check_call(
-                [
-                    "cmake",
-                    "..",
-                    f"-DCMAKE_INSTALL_PREFIX={os.path.abspath(cnpy_build_dir)}",
-                ],
-                cwd=cnpy_build_dir,
-            )
-            subprocess.check_call(["make", "-j"], cwd=cnpy_build_dir)
-            subprocess.check_call(["make", "install"], cwd=cnpy_build_dir)
-
-            # Copy liblightnetinfer.so to package directory
-            shutil.copy(
-                os.path.join(cnpy_build_dir, "libcnpy.so"),
-                os.path.join(pylightnet_dir, "libcnpy.so"),
-            )
-
-            print("Successfully built libcupy.so")
-
             # Clean build directory
             lightnet_dir = os.path.dirname(setup_root_dir)
             lightnet_build_dir = os.path.join(lightnet_dir, "build")
@@ -104,30 +104,30 @@ class BuildLightnetInfer(Command):
                 shutil.rmtree(lightnet_build_dir)
             os.makedirs(lightnet_build_dir, exist_ok=True)
 
-            # Set environment variables and make liblightnetinfer.so
-            os.environ["CPLUS_INCLUDE_PATH"] = (
-                f"{os.path.join(cnpy_build_dir, 'include')}:{os.environ.get('CPLUS_INCLUDE_PATH', '')}"
-            )
-            os.environ["LIBRARY_PATH"] = (
-                f"{os.path.join(cnpy_build_dir, 'lib')}:{os.environ.get('LIBRARY_PATH', '')}"
-            )
+            # Build lightnetinfer using CMake
             subprocess.check_call(["cmake", ".."], cwd=lightnet_build_dir)
             subprocess.check_call(["make", "-j"], cwd=lightnet_build_dir)
+
+            # Find and copy libcnpy.so
+            libcnpy_path = self._find_libcnpy(lightnet_build_dir)
+            shutil.copy(libcnpy_path, os.path.join(pylightnet_dir, "libcnpy.so"))
+            print(f"Successfully copied libcnpy.so from {libcnpy_path}")
 
             # Copy liblightnetinfer.so to package directory
             shutil.copy(
                 os.path.join(lightnet_build_dir, "liblightnetinfer.so"),
                 os.path.join(pylightnet_dir, "liblightnetinfer.so"),
             )
-
             print("Successfully built liblightnetinfer.so")
 
             # Clean build directory
             shutil.rmtree(lightnet_build_dir)
-            shutil.rmtree(cnpy_dir)
 
         except subprocess.CalledProcessError as e:
             print(f"Failed to execute command: {e}")
+            raise
+        except FileNotFoundError as e:
+            print(str(e))
             raise
 
 
