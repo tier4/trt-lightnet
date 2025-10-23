@@ -17,9 +17,25 @@
 import os
 import shutil
 import subprocess
+import sys
 
 from setuptools import Command, find_packages, setup
-from setuptools.command.build import build
+
+try:
+    from setuptools.command.build import build
+except ImportError as e:
+    print(
+        "Error: Failed to import 'build' from setuptools.command.build\n"
+        "\n"
+        "This package requires setuptools>=80.9.0,<81.0.0\n"
+        "\n"
+        "Please upgrade setuptools to the required version:\n"
+        "  pip install 'setuptools>=80.9.0,<81.0.0'\n"
+        "\n"
+        f"Original error: {e}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 skip_ext = os.environ.get("SKIP_EXT", "0") == "1"
 
@@ -144,6 +160,9 @@ setup(
     install_requires=[
         "opencv-python",
         "numpy<2.0",
+    ],
+    setup_requires=[
+        "setuptools>=80.9.0,<81.0.0",
     ],
     extras_require={
         "dev": [

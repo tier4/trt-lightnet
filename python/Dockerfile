@@ -31,6 +31,9 @@ RUN apt install \
   libnvparsers-dev=${TENSORRT_VERSION} \
   && rm -rf /var/lib/apt/lists/*
 
+# Update setuptools
+RUN pip3 install 'setuptools>=80.9.0,<81.0.0'
+
 # Copy source code
 RUN mkdir -p /opt/app
 COPY . /opt/app
