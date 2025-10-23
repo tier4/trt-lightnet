@@ -37,17 +37,14 @@ except ImportError as e:
     )
     sys.exit(1)
 
-skip_ext = os.environ.get("SKIP_EXT", "0") == "1"
+rebuild_trtlightnet = os.environ.get("REBUILD_TRTLIGHTNET", "1") == "1"
 
 
 class CustomBuild(build):
     description = "Custom build command"
 
     def run(self):
-        if not skip_ext:
-            self.run_command("build_lightnet_infer")
-        else:
-            print("SKIP_EXT=1 detected: skipping build_lightnet_infer")
+        self.run_command("build_lightnet_infer")
         super().run()
 
 
@@ -111,18 +108,33 @@ class BuildLightnetInfer(Command):
         """Build lightnetinfer library and copy required .so files to package."""
         setup_root_dir = os.path.dirname(os.path.realpath(__file__))
         pylightnet_dir = os.path.join(setup_root_dir, "pylightnet")
+        lightnet_dir = os.path.dirname(setup_root_dir)
+        lightnet_build_dir = os.path.join(lightnet_dir, "build")
 
         try:
-            # Clean build directory
-            lightnet_dir = os.path.dirname(setup_root_dir)
-            lightnet_build_dir = os.path.join(lightnet_dir, "build")
-            if os.path.exists(lightnet_build_dir):
-                shutil.rmtree(lightnet_build_dir)
-            os.makedirs(lightnet_build_dir, exist_ok=True)
+            # Handle build directory based on REBUILD_TRTLIGHTNET
+            if rebuild_trtlightnet:
+                # Clean build: remove existing build directory
+                if os.path.exists(lightnet_build_dir):
+                    print("Cleaning build directory (REBUILD_TRTLIGHTNET=1)")
+                    shutil.rmtree(lightnet_build_dir)
+                os.makedirs(lightnet_build_dir, exist_ok=True)
 
-            # Build lightnetinfer using CMake
-            subprocess.check_call(["cmake", ".."], cwd=lightnet_build_dir)
-            subprocess.check_call(["make", "-j"], cwd=lightnet_build_dir)
+                # Build lightnetinfer using CMake
+                subprocess.check_call(["cmake", ".."], cwd=lightnet_build_dir)
+                subprocess.check_call(["make", "-j"], cwd=lightnet_build_dir)
+            else:
+                # Incremental build: preserve existing build directory
+                print("Skipping build directory clean (REBUILD_TRTLIGHTNET=0)")
+
+                if os.path.exists(lightnet_build_dir):
+                    # Build directory exists, skip CMake build and use existing artifacts
+                    print(f"Reusing existing build artifacts from {lightnet_build_dir}")
+                else:
+                    # Build directory doesn't exist, create and build
+                    os.makedirs(lightnet_build_dir, exist_ok=True)
+                    subprocess.check_call(["cmake", ".."], cwd=lightnet_build_dir)
+                    subprocess.check_call(["make", "-j"], cwd=lightnet_build_dir)
 
             # Find and copy libcnpy.so
             libcnpy_path = self._find_libcnpy(lightnet_build_dir)
@@ -136,8 +148,8 @@ class BuildLightnetInfer(Command):
             )
             print("Successfully built liblightnetinfer.so")
 
-            # Clean build directory
-            shutil.rmtree(lightnet_build_dir)
+            # Preserve build directory for future incremental builds
+            print(f"Build directory preserved at: {lightnet_build_dir}")
 
         except subprocess.CalledProcessError as e:
             print(f"Failed to execute command: {e}")
