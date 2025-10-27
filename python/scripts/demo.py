@@ -85,11 +85,11 @@ def demo(video_path, config_path):
             entropies = lightnet.get_entropies()
             results = {}
             for index in sorted(mask_dict.keys()):
-                mask_name = mask_dict[index]['name']
+                mask_name = mask_dict[index]["name"]
                 entropy = entropies[0][index]
                 results[mask_name] = entropy
             print("Entropy values:", results)
-                
+
             entropy_maps = lightnet.get_entropy_maps_from_cpp()
             for i, emap in enumerate(entropy_maps):
                 cv2.imshow(f"Entropy_{i}", emap)
