@@ -22,6 +22,8 @@ import re
 import cv2
 import numpy as np
 import pkg_resources
+from typing import Dict, List, Any
+from pathlib import Path
 
 __all__ = ["pylightnet"]
 
@@ -114,6 +116,52 @@ class ColormapC(ctypes.Structure):
         ("is_dynamic", ctypes.c_bool),
     ]
 
+class C_CalibratedSensorInfo(ctypes.Structure):
+    """
+    Corresponds to the C_CalibratedSensorInfo struct defined in C++.
+    This structure holds C-compatible types (pointers, sizes) for safe
+    data transfer across the C/Python boundary, avoiding C++ STL containers.
+    """
+    _fields_ = [
+        # Strings (const char*)
+        ("token", ctypes.c_char_p),
+        ("sensor_token", ctypes.c_char_p),
+
+        # Vectors (double* and size_t)
+        ("translation", ctypes.POINTER(ctypes.c_double)),
+        ("translation_size", ctypes.c_size_t),
+
+        ("rotation", ctypes.POINTER(ctypes.c_double)),
+        ("rotation_size", ctypes.c_size_t),
+
+        # 2D Array (Flattened double* and dimension info)
+        ("camera_intrinsic", ctypes.POINTER(ctypes.c_double)),
+        ("intrinsic_rows", ctypes.c_size_t),
+        ("intrinsic_cols", ctypes.c_size_t),
+
+        ("camera_distortion", ctypes.POINTER(ctypes.c_double)),
+        ("distortion_size", ctypes.c_size_t),
+
+        # Strings (const char*)
+        ("name", ctypes.c_char_p),
+        ("modality", ctypes.c_char_p),
+
+        # Integers
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+    ]
+
+class C_ImageResult(ctypes.Structure):
+    """
+    Corresponds to the C_ImageResult struct for transferring cv::Mat data from C++.
+    """
+    _fields_ = [
+        ("data", ctypes.POINTER(ctypes.c_ubyte)), # Heap-allocated image data
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("channels", ctypes.c_int),
+        ("data_size", ctypes.c_size_t),
+    ]
 
 # Utility functions to load names and colormap from files
 def load_names_from_file(filename):
@@ -399,6 +447,30 @@ class TrtLightnet:
 
         self.lib.free_entropies.argtypes = [ctypes.POINTER(ctypes.c_float)]
         self.lib.free_entropies.restype = None
+
+        # Set argument types (argtypes) and return type (restype) for the C++ getter
+        # Signature: get_calibrated_info_for_python(const char*, const char*) -> C_CalibratedSensorInfo
+        self.lib.get_calibrated_info_for_python.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p
+        ]
+        self.lib.get_calibrated_info_for_python.restype = C_CalibratedSensorInfo
+
+        # Set signature for the C++ memory deallocation function
+        # Signature: free_calibrated_info(C_CalibratedSensorInfo) -> void
+        self.lib.free_calibrated_info.argtypes = [C_CalibratedSensorInfo]
+        self.lib.free_calibrated_info.restype = None
+
+        self.lib.make_range_image_for_python.argtypes = [
+            ctypes.c_char_p,
+            C_CalibratedSensorInfo,
+            ctypes.c_float
+        ]
+        self.lib.make_range_image_for_python.restype = C_ImageResult
+
+        # free_image_result(C_ImageResult) -> void
+        self.lib.free_image_result.argtypes = [C_ImageResult]
+        self.lib.free_image_result.restype = None
 
     def get_input_size(self):
         batch = ctypes.c_int()
@@ -797,53 +869,132 @@ class TrtLightnet:
 
         return entropy_maps
 
+    def get_calibrated_info(self, calib_path: str, camera_name: str):
+        """
+        Calls the C++ function to retrieve calibrated sensor info, converts the result 
+        into a Python dictionary, and frees the C++ allocated memory.
 
-# Function to draw bounding boxes
-def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
-    for bbox in bboxes:
-        x1, y1, x2, y2 = bbox["box"]
-        label = bbox["label"]
-        class_name = names[label] if label < len(names) else "Unknown"
-        color = (
-            colormap[label * 3 + 2],
-            colormap[label * 3 + 1],
-            colormap[label * 3 + 0],
-        )
-        if filled is True:
-            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
-        else:
-            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-        cv2.putText(
-            image,
-            f"{class_name} ({bbox['prob']:.2f})",
-            (int(x1), int(y1) - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            2,
-        )
-        if "attribute_prob" in bbox and bbox["attribute_prob"] > 0.1:
-            attr = bbox["attribute"]
-            attr_prob = bbox["attribute_prob"]
-            cv2.putText(
-                image,
-                f"--> {attr} ({attr_prob:.2f})",
-                (int(x1), int(y1) + 20),
-                cv2.FONT_ITALIC,
-                0.5,
-                color,
-                2,
-            )
-        if "sub_name" in bbox:
-            cv2.putText(
-                image,
-                f"--> {bbox['sub_name']}",
-                (int(x1), int(y1) + 20),
-                cv2.FONT_ITALIC,
-                0.5,
-                color,
-                2,
-            )
+        Args:
+        calib_path: Path to the directory containing calibration data.
+        camera_name: Name of the target camera.
+
+        Returns:
+        A dictionary containing the calibrated sensor information.
+        """
+        if not self.lib:
+            raise RuntimeError("C library is not loaded. Cannot proceed.")
+
+        # Encode Python strings to bytes for C compatibility
+        #path_bytes = calib_path.encode('utf-8')
+        path_str = str(calib_path)
+        path_bytes = path_str.encode('utf-8')
+        name_bytes = camera_name.encode('utf-8')
+
+        # Call the C++ function to get the C-compatible struct
+        c_info = self.lib.get_calibrated_info_for_python(path_bytes, name_bytes)
+
+        result = {}
+        try:
+            # --- Data Conversion ---
+
+            # 1. Strings (c_char_p)
+            result["token"] = c_info.token.decode('utf-8') if c_info.token else ""
+            result["sensor_token"] = c_info.sensor_token.decode('utf-8') if c_info.sensor_token else ""
+            result["name"] = c_info.name.decode('utf-8') if c_info.name else ""
+            result["modality"] = c_info.modality.decode('utf-8') if c_info.modality else ""
+
+            # 2. 1D Arrays (POINTER(c_double))
+            result["translation"] = list(c_info.translation[:c_info.translation_size])
+            result["rotation"] = list(c_info.rotation[:c_info.rotation_size])
+            result["camera_distortion"] = list(c_info.camera_distortion[:c_info.distortion_size])
+
+            # 3. 2D Array (Intrinsic Matrix)
+            intrinsic_matrix: List[List[float]] = []
+            if c_info.camera_intrinsic and c_info.intrinsic_rows > 0 and c_info.intrinsic_cols > 0:
+                total_size = c_info.intrinsic_rows * c_info.intrinsic_cols
+                intrinsic_flat = list(c_info.camera_intrinsic[:total_size])
+
+                # Reshape the flattened list into a 2D matrix
+                for i in range(c_info.intrinsic_rows):
+                    start_index = i * c_info.intrinsic_cols
+                    end_index = (i + 1) * c_info.intrinsic_cols
+                    intrinsic_matrix.append(intrinsic_flat[start_index:end_index])
+
+            result["camera_intrinsic"] = intrinsic_matrix
+
+            # 4. Primitive types
+            result["width"] = c_info.width
+            result["height"] = c_info.height
+
+        except Exception as e:
+            # エラー時はここでc_infoのメモリを解放すべき
+            self.lib.free_calibrated_info(c_info)
+            raise e
+
+        return result, c_info
+
+    ## 🎯 Range Image Generation Wrapper
+
+    def make_range_image(self, file_path: Path, target_calib_info: C_CalibratedSensorInfo, max_distance: float) -> np.ndarray:
+        """
+        Calls the C++ function Pcd2image::makeRangeImageFromCalibration via ctypes.
+
+        This function securely converts the Path object, passes the calibration struct,
+        retrieves the image data (cv::Mat content), converts it to a NumPy array,
+        and frees the memory allocated by the C++ layer.
+
+        Args:
+        file_path: Path object pointing to the input point cloud file.
+        target_calib_info: C_CalibratedSensorInfo struct containing calibration data.
+        max_distance: Maximum distance for range image normalization (float).
+
+        Returns:
+        A NumPy array representing the range image (H x W x C, uint8), or an empty array on failure.
+        """
+        if not self.lib:
+            print("Error: C library is not loaded. Returning empty array.")
+            return np.array([], dtype=np.uint8)
+
+        # 1. Convert Path object to a C-compatible byte string (const char*)
+        # Path -> str -> bytes (utf-8 encoded)
+        path_bytes = str(file_path).encode('utf-8')
+
+        # 2. Call the C++ wrapper function to get the C_ImageResult struct
+        c_result = self.lib.make_range_image_for_python(path_bytes, target_calib_info, max_distance)
+
+        image_data = np.array([], dtype=np.uint8)
+
+        try:
+            if c_result.data and c_result.data_size > 0:
+                width = c_result.width
+                height = c_result.height
+                channels = c_result.channels
+                data_size = c_result.data_size
+
+                if height > 0 and width > 0 and channels > 0 and data_size == width * height * channels:
+
+                    # 3. Create a NumPy array view of the C-allocated memory
+                    # Create a ctypes array of the correct size, pointed to by c_result.data
+                    buffer_type = ctypes.c_ubyte * data_size
+
+                    # Create the NumPy array pointing to the memory block
+                    np_array_view = np.ctypeslib.as_array(c_result.data, shape=(data_size,))
+
+                    # 4. Reshape the 1D view into the final 2D/3D image shape (H x W x C) and copy.
+                    # The .copy() is crucial: it moves the data from the C++ heap to Python's memory, 
+                    # allowing us to safely free the C++ memory in the 'finally' block.
+                    image_data = np_array_view.reshape(height, width, channels).copy()
+
+                else:
+                    print(f"Warning: Invalid image dimensions received: H={height}, W={width}, C={channels}, Size={data_size}")
+
+        finally:
+            # 🔥 ESSENTIAL: Free the memory allocated by the C++ layer's malloc/new
+            if self.lib and c_result.data:
+                self.lib.free_image_result(c_result)
+
+        return image_data
+
 
 
 def load_config(file_path):
@@ -1097,3 +1248,4 @@ def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
                 blurred_image[y1:y2, x1:x2] = blurred_roi
 
     return blurred_image
+

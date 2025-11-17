@@ -14,6 +14,8 @@
 
 #include <nlohmann/json.hpp>
 #include <tensorrt_lightnet/tensorrt_lightnet.hpp>
+#include <sensor/CalibratedSensorParser.h>
+#include <pcdUtils/pcd2image.hpp>
 #include <cstdint>
 
 constexpr int MAX_STRING_SIZE = 256;
@@ -103,6 +105,51 @@ typedef struct ColormapC_
   unsigned char color[3];
   bool is_dynamic;
 } ColormapC;
+
+/**
+ * @brief C-compatible structure for transferring image data (cv::Mat content) to Python via ctypes.
+ * * This structure holds the flattened image data and its essential metadata.
+ */
+struct C_ImageResult {
+  unsigned char* data; ///< Pointer to the heap-allocated, flattened image data (e.g., BGR sequence).
+  int width;           ///< Image width (columns).
+  int height;          ///< Image height (rows).
+  int channels;        ///< Number of channels (e.g., 3 for CV_8UC3).
+  size_t data_size;    ///< Total size of the data array in bytes (width * height * channels).
+};
+
+/**
+ * @brief C-compatible structure for transferring calibrated sensor data to Python via ctypes.
+ * * This structure replaces C++ STL containers (std::string, std::vector) with
+ * raw pointers and size indicators, allowing safe cross-language communication.
+ */
+struct C_CalibratedSensorInfo {
+  // Strings are transferred as heap-allocated, null-terminated char pointers.
+  const char* token;
+  const char* sensor_token;
+
+  // Vectors are transferred as heap-allocated double pointers with explicit size.
+  const double* translation;
+  size_t translation_size;
+
+  const double* rotation;
+  size_t rotation_size;
+
+  // 2D Array (intrinsic matrix) is flattened and transferred with dimension info.
+  const double* camera_intrinsic;
+  size_t intrinsic_rows;
+  size_t intrinsic_cols;
+
+  const double* camera_distortion;
+  size_t distortion_size;
+
+  const char* name;
+  const char* modality;
+
+  int width;
+  int height;
+};
+
 
 
 // Expose functions to Python via extern "C"
@@ -1145,6 +1192,251 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     if (data) {
       free(data);
     }
-  }  
+  }
+
+  /**
+   * @brief Helper function to safely copy an std::string to a heap-allocated C-style string.
+   * @param s The source std::string.
+   * @return const char* A pointer to the newly allocated null-terminated C string, or nullptr on failure.
+   */
+  const char* copy_string_to_c_char(const std::string& s) {
+    // Allocate space for the string content plus the null terminator (+1)
+    char* c_str = (char*)std::malloc(s.length() + 1);
+    if (c_str) {
+      std::strcpy(c_str, s.c_str());
+    }
+    return c_str;
+  }
+
+  /**
+   * @brief Helper function to safely copy an std::vector<double> to a heap-allocated double array.
+   * @param v The source std::vector<double>.
+   * @return const double* A pointer to the newly allocated double array, or nullptr if empty/failure.
+   */
+  const double* copy_vector_to_c_double_array(const std::vector<double>& v) {
+    if (v.empty()) {
+      return nullptr;
+    }
+    // Allocate space for the array
+    double* arr = (double*)std::malloc(v.size() * sizeof(double));
+    if (arr) {
+      // Copy the elements
+      std::copy(v.begin(), v.end(), arr);
+    }
+    return arr;
+  }
+
+  extern "C" void free_calibrated_info(C_CalibratedSensorInfo info) {
+    // Free all heap memory allocated for strings and arrays within the structure
+    std::free((void*)info.token);
+    std::free((void*)info.sensor_token);
+    std::free((void*)info.translation);
+    std::free((void*)info.rotation);
+    std::free((void*)info.camera_intrinsic);
+    std::free((void*)info.camera_distortion);
+    std::free((void*)info.name);
+    std::free((void*)info.modality);
+  }
+
+  // ----------------------------------------------------
+  // Main Wrapper Implementation
+  // ----------------------------------------------------
+
+  extern "C" C_CalibratedSensorInfo get_calibrated_info_for_python(
+								   const char* caliibrationInfoPath,
+								   const char* camera_name)
+  {
+    // Convert C strings to std::string for the original C++ function call
+    std::string path_str = caliibrationInfoPath;
+    std::string name_str = camera_name;
+
+    // 1. Call the original C++ function
+    // NOTE: This assumes getTargetCalibratedInfo is linked/accessible.
+    CalibratedSensorInfo targetInfo = getTargetCalibratedInfo(path_str, name_str);
+
+    // 2. Initialize and convert the result to the C-compatible structure
+    C_CalibratedSensorInfo c_info = {0}; // Zero-initialization
+
+    // Copy std::string content to heap-allocated C strings
+    c_info.token = copy_string_to_c_char(targetInfo.token);
+    c_info.sensor_token = copy_string_to_c_char(targetInfo.sensor_token);
+    c_info.name = copy_string_to_c_char(targetInfo.name);
+    c_info.modality = copy_string_to_c_char(targetInfo.modality);
+
+    // Copy std::vector<double> content to heap-allocated double arrays
+    c_info.translation = copy_vector_to_c_double_array(targetInfo.translation);
+    c_info.translation_size = targetInfo.translation.size();
+
+    c_info.rotation = copy_vector_to_c_double_array(targetInfo.rotation);
+    c_info.rotation_size = targetInfo.rotation.size();
+
+    c_info.camera_distortion = copy_vector_to_c_double_array(targetInfo.camera_distortion);
+    c_info.distortion_size = targetInfo.camera_distortion.size();
+
+    // Handle the 2D array (camera_intrinsic) by flattening it
+    if (!targetInfo.camera_intrinsic.empty() && !targetInfo.camera_intrinsic[0].empty()) {
+      c_info.intrinsic_rows = targetInfo.camera_intrinsic.size();
+      c_info.intrinsic_cols = targetInfo.camera_intrinsic[0].size();
+      size_t total_size = c_info.intrinsic_rows * c_info.intrinsic_cols;
+
+      double* flat_array = (double*)std::malloc(total_size * sizeof(double));
+      if (flat_array) {
+	size_t k = 0;
+	for (const auto& row : targetInfo.camera_intrinsic) {
+	  // Assuming all rows have the same length (c_info.intrinsic_cols)
+	  std::copy(row.begin(), row.end(), flat_array + k);
+	  k += row.size();
+	}
+	c_info.camera_intrinsic = flat_array;
+      } else {
+	// Handle memory allocation failure
+	c_info.camera_intrinsic = nullptr;
+	c_info.intrinsic_rows = 0;
+	c_info.intrinsic_cols = 0;
+      }
+    } else {
+      c_info.camera_intrinsic = nullptr;
+      c_info.intrinsic_rows = 0;
+      c_info.intrinsic_cols = 0;
+    }
+
+    // 3. Copy primitive types
+    c_info.width = targetInfo.width;
+    c_info.height = targetInfo.height;
+
+    return c_info;
+  }
+
+  void free_image_result(C_ImageResult result) {
+    // Frees the memory allocated for the image data pointer
+    std::free(result.data);
+  }
+
+  /**
+   * @brief Converts the C-compatible calibration structure back to the original C++ structure.
+   * * This function serves as the critical bridge, copying data from C-style pointers/arrays 
+   * (received from Python/ctypes) into native C++ STL containers (std::string, std::vector).
+   * The caller must ensure that the memory pointed to by C_CalibratedSensorInfo is later freed 
+   * using the designated C wrapper free function.
+   * * @param cam_calib_c The C_CalibratedSensorInfo structure passed from Python (ctypes).
+   * @return CalibratedSensorInfo The original C++ structure ready for internal use.
+   */
+  CalibratedSensorInfo convert_c_to_cpp(const C_CalibratedSensorInfo& cam_calib_c) {
+    CalibratedSensorInfo cam_calib;
+
+    // 1. Strings (const char* to std::string)
+    // Safely convert C-style null-terminated strings, checking for nullptr.
+    if (cam_calib_c.token) {
+      cam_calib.token = std::string(cam_calib_c.token);
+    }
+    if (cam_calib_c.sensor_token) {
+      cam_calib.sensor_token = std::string(cam_calib_c.sensor_token);
+    }
+    if (cam_calib_c.name) {
+      cam_calib.name = std::string(cam_calib_c.name);
+    }
+    if (cam_calib_c.modality) {
+      cam_calib.modality = std::string(cam_calib_c.modality);
+    }
+
+    // 2. 1D Vectors (double* and size_t to std::vector<double>)
+    // Copy data from raw pointers using range assignment.
+    if (cam_calib_c.translation && cam_calib_c.translation_size > 0) {
+      cam_calib.translation.assign(
+				   cam_calib_c.translation,
+				               cam_calib_c.translation + cam_calib_c.translation_size
+				   );
+    }
+
+    if (cam_calib_c.rotation && cam_calib_c.rotation_size > 0) {
+      cam_calib.rotation.assign(
+				cam_calib_c.rotation,
+				            cam_calib_c.rotation + cam_calib_c.rotation_size
+				);
+    }
+
+    if (cam_calib_c.camera_distortion && cam_calib_c.distortion_size > 0) {
+      cam_calib.camera_distortion.assign(
+					 cam_calib_c.camera_distortion,
+					             cam_calib_c.camera_distortion + cam_calib_c.distortion_size
+					 );
+    }
+
+    // 3. 2D Vector (Flattened double* to std::vector<std::vector<double>>)
+    // Reconstruct the 2D matrix structure from the flattened array and dimension info.
+    if (cam_calib_c.camera_intrinsic &&
+	        cam_calib_c.intrinsic_rows > 0 &&
+	cam_calib_c.intrinsic_cols > 0)
+      {
+	const double* ptr = cam_calib_c.camera_intrinsic;
+
+	for (size_t i = 0; i < cam_calib_c.intrinsic_rows; ++i) {
+	  // Calculate start and end indices for the current row
+	  size_t row_start_index = i * cam_calib_c.intrinsic_cols;
+	  size_t row_end_index = row_start_index + cam_calib_c.intrinsic_cols;
+
+	  // Assign the row elements to a new std::vector
+	  std::vector<double> row;
+	  row.assign(ptr + row_start_index, ptr + row_end_index);
+
+	  cam_calib.camera_intrinsic.push_back(std::move(row));
+	}
+      }
+
+    // 4. Primitive types
+    cam_calib.width = cam_calib_c.width;
+    cam_calib.height = cam_calib_c.height;
+
+    // Note: The memory pointed to by pointers inside cam_calib_c is NOT freed here.
+    // It is the responsibility of the Python caller to invoke free_calibrated_info.
+
+    return cam_calib;
+  }
+
+  C_ImageResult make_range_image_for_python(
+						       const char* inputName,
+						       C_CalibratedSensorInfo cam_calib_c,
+						       float max_distance)
+  {
+    // Initialize result struct
+    C_ImageResult c_result = {0};
+
+    try {
+      // 1. Convert C types back to C++ types
+      CalibratedSensorInfo cam_calib = convert_c_to_cpp(cam_calib_c);
+      std::string inputNameStr(inputName);
+
+      // 2. Instantiate the Pcd2image class and call the core C++ logic
+      pcd2image::Pcd2image p2i;
+      cv::Mat result_mat = p2i.makeRangeImageFromCalibration(inputNameStr, cam_calib, max_distance);
+
+      // 3. Convert cv::Mat to C-compatible structure
+      if (!result_mat.empty() && result_mat.isContinuous() && result_mat.type() == CV_8UC3) {
+	c_result.width = result_mat.cols;
+	c_result.height = result_mat.rows;
+	c_result.channels = result_mat.channels();
+
+	// Calculate total size in bytes
+	size_t size = result_mat.total() * result_mat.elemSize();
+	c_result.data_size = size;
+
+	// Allocate memory on the heap and copy the data
+	unsigned char* data_copy = (unsigned char*)std::malloc(size);
+	if (data_copy) {
+	  std::memcpy(data_copy, result_mat.data, size);
+	  c_result.data = data_copy;
+	} else {
+	  std::cerr << "Error: Failed to allocate memory for image copy." << std::endl;
+	}
+      } else if (!result_mat.empty() && !result_mat.isContinuous()) {
+	std::cerr << "Warning: cv::Mat is not continuous. Copy not implemented." << std::endl;
+      }
+
+    } catch (const std::exception& e) {
+      std::cerr << "Error in C++ wrapper: " << e.what() << std::endl;
+    }
+
+    return c_result;
+  }
 }
 
