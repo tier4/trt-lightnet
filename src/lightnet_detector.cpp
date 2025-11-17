@@ -1077,65 +1077,6 @@ void inferLightNetPipeline(
   }
 }
 
-
-/**
- * @brief Retrieves the calibrated sensor information for a specified camera from the given calibration data path.
- *
- * @param caliibrationInfoPath Path to the directory containing calibration data files.
- * @param camera_name Name of the camera whose calibrated information is to be retrieved.
- * @return CalibratedSensorInfo The calibrated sensor information for the specified camera.
- */
-CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, std::string camera_name) {
-  std::string sensorFileName;
-  std::string calibratedSensorFileName;
-  std::vector<Sensor> sensors;
-  std::vector<CalibratedSensorInfo> calibratedSensors;
-  CalibratedSensorInfo targetCalibratedInfo;
-
-  // Construct file paths for sensor.json and calibrated_sensor.json
-  sensorFileName = (std::filesystem::path(caliibrationInfoPath) / "sensor.json").string();
-  calibratedSensorFileName = (std::filesystem::path(caliibrationInfoPath) / "calibrated_sensor.json").string();
-
-  try {
-    // Parse the sensor data from sensor.json
-    SensorParser::parse(sensorFileName, sensors);
-
-    // Parse the calibrated sensor data from calibrated_sensor.json
-    CalibratedSensorParser::parse(calibratedSensorFileName, calibratedSensors);
-
-    // Iterate through each calibrated sensor and match it with its corresponding sensor information
-    for (auto& calibratedSensor : calibratedSensors) {
-      // Retrieve and set the sensor name and modality based on the sensor token
-      calibratedSensor.name = SensorParser::getSensorNameFromToken(sensors, calibratedSensor.sensor_token);
-      calibratedSensor.modality = SensorParser::getSensorModalityFromToken(sensors, calibratedSensor.sensor_token);
-
-      // Set default resolution for the sensor
-      calibratedSensor.width = 1920;
-      calibratedSensor.height = 1280;
-
-      // Override resolution for specific camera types
-      if (calibratedSensor.name == "CAM_FRONT_NARROW" || calibratedSensor.name == "CAM_FRONT_WIDE") {
-	calibratedSensor.width = 2880;
-	calibratedSensor.height = 1860;
-      }
-      if (get_width() && get_height()) {
-	calibratedSensor.width = get_width();
-	calibratedSensor.height = get_height();
-      }
-      // If the current sensor matches the target camera name, store its information
-      if (calibratedSensor.name == camera_name) {
-	targetCalibratedInfo = calibratedSensor;
-      }
-    }
-  } catch (const std::exception& e) {
-    // Handle any errors that occur during parsing or processing
-    std::cerr << "Error: " << e.what() << std::endl;
-  }
-
-  // Return the calibrated sensor information for the specified camera
-  return targetCalibratedInfo;
-}
-
 int
 main(int argc, char* argv[])
 {

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <sensor/SensorParser.h>
 
@@ -40,4 +41,5 @@ class CalibratedSensorParser {
   static void parse(const std::string& fileName, std::vector<CalibratedSensorInfo>& entries);
 };
 
+extern CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, std::string camera_name);
 #endif // CALIBRATEDSENSORPARSER_H
