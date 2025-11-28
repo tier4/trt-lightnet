@@ -148,7 +148,6 @@ void SensorParser::parseCameraResolutions(const std::string& fileName, Resolutio
       std::string modality = item.value("sensor_modality", "");
       std::string fileformat = item.value("fileformat", "");
       std::string filename = item.value("filename", "");
-      bool isValid = item.value("is_valid", false);
 
       // --- Camera determination logic ---
       // An entry is considered a camera if its modality is "camera" OR if modality is empty but fileformat matches a known camera format.
@@ -156,7 +155,7 @@ void SensorParser::parseCameraResolutions(const std::string& fileName, Resolutio
         (modality.empty() && CAMERA_FORMATS.count(fileformat) > 0);
 
       // Process only valid camera entries
-      if (isCamera && isValid) {
+      if (isCamera) {      
 
         // --- Logic to extract channel name from filename ---
         std::string channel = "";
