@@ -28,8 +28,10 @@ jobs:
       - name: Install pylightnet without build
         working-directory: ./python
         env:
-          SKIP_EXT: "1"
+          REBUILD_TRTLIGHTNET: "0"
         run: |
+          mkdir -p ../build/_deps/cnpy-build  # dummy library paths
+          touch ../build/_deps/cnpy-build/libcnpy.so ../build/liblightnetinfer.so
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install .[dev]
 
