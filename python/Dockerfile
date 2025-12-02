@@ -7,7 +7,7 @@ ENV TZ=Asia/Tokyo
 # Install fundamental packages
 RUN apt update -y \
   && apt upgrade -y \
-  && apt install -y build-essential software-properties-common git cmake wget libgflags-dev libboost-all-dev libopencv-dev libeigen3-dev nlohmann-json3-dev libssl-dev
+  && apt install -y build-essential software-properties-common git cmake wget libgflags-dev libboost-all-dev libopencv-dev python3.10 python3-pip python3-setuptools libeigen3-dev nlohmann-json3-dev zlib1g-dev libssl-dev
 
 # Install TensorRT
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
@@ -31,12 +31,9 @@ RUN apt install \
   libnvparsers-dev=${TENSORRT_VERSION} \
   && rm -rf /var/lib/apt/lists/*
 
-# Build app
+# Copy source code
 RUN mkdir -p /opt/app
 COPY . /opt/app
 WORKDIR /opt/app
-RUN mkdir -p build && cd build && cmake .. && make -j
 
-# Default CMD
-ENTRYPOINT ["/opt/app/docker-entrypoint.sh"]
 CMD ["/bin/bash"]

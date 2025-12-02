@@ -1,0 +1,11 @@
+id,name,r,g,b,dynamic
+0,others,0,0,0,false
+1,obstacle,0,255,0,false
+2,vehicle,0,0,142,false
+3,bike,60,20,220,false
+4,bicycle,119,11,32,false
+5,person,220,20,60,false
+6,road,128,64,128,false
+7,sidewalk,244,35,232,false
+8,building,100,100,200,false
+9,vegetation,147,253,194,false

@@ -14,19 +14,20 @@
 
 import argparse
 import cv2
-import numpy as np
-import ctypes
-import time
-from pathlib import Path
-import os
 import pylightnet
 
 
 def parse_args():
     """Parse command-line arguments for video path and config file."""
-    parser = argparse.ArgumentParser(description="Run inference on a video using PyLightNet.")
-    parser.add_argument("-v", "--video", help="Path to the video file", required=True, type=str)
-    parser.add_argument("-f", "--flagfile", help="Path to the config file", required=True, type=str)
+    parser = argparse.ArgumentParser(
+        description="Run inference on a video using PyLightNet."
+    )
+    parser.add_argument(
+        "-v", "--video", help="Path to the video file", required=True, type=str
+    )
+    parser.add_argument(
+        "-f", "--flagfile", help="Path to the config file", required=True, type=str
+    )
     return parser.parse_args()
 
 
@@ -43,7 +44,7 @@ def demo(video_path, config_path):
     lightnet = pylightnet.create_lightnet_from_config(config_dict)
     target = pylightnet.load_names_from_file(config_dict["target_names"])
     subnet_names = pylightnet.load_names_from_file(config_dict["subnet_names"])
-    subnet_colormap = pylightnet.load_colormap_from_file(config_dict["subnet_rgb"])    
+    subnet_colormap = pylightnet.load_colormap_from_file(config_dict["subnet_rgb"])
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("Error: Could not open video.")
@@ -63,7 +64,9 @@ def demo(video_path, config_path):
         pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
 
         subnet_bboxes = lightnet.get_subnet_bboxes()
-        pylightnet.draw_bboxes_on_image(image, subnet_bboxes, subnet_colormap, subnet_names)
+        pylightnet.draw_bboxes_on_image(
+            image, subnet_bboxes, subnet_colormap, subnet_names
+        )
 
         # Resize for display
         image = cv2.resize(image, (1920, 1280))
@@ -75,9 +78,9 @@ def demo(video_path, config_path):
 
     cap.release()
     cv2.destroyAllWindows()
+    lightnet.destroy()
 
 
 if __name__ == "__main__":
     args = parse_args()
     demo(args.video, args.flagfile)
-

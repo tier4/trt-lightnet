@@ -1009,11 +1009,7 @@ void inferLightNetPipeline(
 
   // Calculate entropy and save results if required
   if (get_calc_entropy_flg()) {
-    start = std::chrono::high_resolution_clock::now();
     trt_lightnet->calcEntropyFromSoftmax();
-    end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<long long, std::milli> duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << "##Uncertainty: " << duration.count() << " ms " << std::endl;    
     if (path_config.save_path != "not-specified") {
       fs::path dstPath(path_config.save_path);
       if (!sensor_name.empty()) {
@@ -1079,65 +1075,6 @@ void inferLightNetPipeline(
     fs::path debugPath = fs::path(path_config.save_path) / "debug_tensors";
     saveDebugTensors(trt_lightnet, debugPath.string(), filename);
   }
-}
-
-
-/**
- * @brief Retrieves the calibrated sensor information for a specified camera from the given calibration data path.
- *
- * @param caliibrationInfoPath Path to the directory containing calibration data files.
- * @param camera_name Name of the camera whose calibrated information is to be retrieved.
- * @return CalibratedSensorInfo The calibrated sensor information for the specified camera.
- */
-CalibratedSensorInfo getTargetCalibratedInfo(std::string caliibrationInfoPath, std::string camera_name) {
-  std::string sensorFileName;
-  std::string calibratedSensorFileName;
-  std::vector<Sensor> sensors;
-  std::vector<CalibratedSensorInfo> calibratedSensors;
-  CalibratedSensorInfo targetCalibratedInfo;
-
-  // Construct file paths for sensor.json and calibrated_sensor.json
-  sensorFileName = (std::filesystem::path(caliibrationInfoPath) / "sensor.json").string();
-  calibratedSensorFileName = (std::filesystem::path(caliibrationInfoPath) / "calibrated_sensor.json").string();
-
-  try {
-    // Parse the sensor data from sensor.json
-    SensorParser::parse(sensorFileName, sensors);
-
-    // Parse the calibrated sensor data from calibrated_sensor.json
-    CalibratedSensorParser::parse(calibratedSensorFileName, calibratedSensors);
-
-    // Iterate through each calibrated sensor and match it with its corresponding sensor information
-    for (auto& calibratedSensor : calibratedSensors) {
-      // Retrieve and set the sensor name and modality based on the sensor token
-      calibratedSensor.name = SensorParser::getSensorNameFromToken(sensors, calibratedSensor.sensor_token);
-      calibratedSensor.modality = SensorParser::getSensorModalityFromToken(sensors, calibratedSensor.sensor_token);
-
-      // Set default resolution for the sensor
-      calibratedSensor.width = 1920;
-      calibratedSensor.height = 1280;
-
-      // Override resolution for specific camera types
-      if (calibratedSensor.name == "CAM_FRONT_NARROW" || calibratedSensor.name == "CAM_FRONT_WIDE") {
-	calibratedSensor.width = 2880;
-	calibratedSensor.height = 1860;
-      }
-      if (get_width() && get_height()) {
-	calibratedSensor.width = get_width();
-	calibratedSensor.height = get_height();
-      }
-      // If the current sensor matches the target camera name, store its information
-      if (calibratedSensor.name == camera_name) {
-	targetCalibratedInfo = calibratedSensor;
-      }
-    }
-  } catch (const std::exception& e) {
-    // Handle any errors that occur during parsing or processing
-    std::cerr << "Error: " << e.what() << std::endl;
-  }
-
-  // Return the calibrated sensor information for the specified camera
-  return targetCalibratedInfo;
 }
 
 int

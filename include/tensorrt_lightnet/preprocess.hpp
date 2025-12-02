@@ -216,3 +216,5 @@ extern void resizeNearestNeighborGpu(unsigned char *dst, unsigned char*src, int 
 
 extern void computeEntropyMapGpu(const float* buf, float* entropy_maps,
 				 int chan, int height, int width, cudaStream_t stream);
+
+extern void launchComputePeakEntropyMap(const float* d_entropy, unsigned char* d_peakEntropy_u8, int chan, int H, int W, cudaStream_t stream);

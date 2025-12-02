@@ -786,7 +786,7 @@ public:
    * the tensors whose names contain "softmax". The function computes the entropy for each 
    * channel and stores the entropy maps.
    */
-  void calcEntropyFromSoftmax(void);
+  void calcEntropyFromSoftmax(const bool is_grayscale = false);
 
   /**
    * @brief This function returns the calculated entropy maps.
@@ -1171,7 +1171,9 @@ public:
   cv::Mat occupancy_;
 
   CudaUniquePtr<float[]> d_entropy_;
-  CudaUniquePtrHost<float[]> h_entropy_;  
+  CudaUniquePtrHost<float[]> h_entropy_;
+  CudaUniquePtr<unsigned char[]> d_peakEntropy_u8_;
+  CudaUniquePtrHost<unsigned char[]> h_peakEntropy_u8_;   
 };
 
 }  // namespace tensorrt_lightnet

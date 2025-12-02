@@ -380,20 +380,21 @@ void addWeightedGpu(unsigned char *output, unsigned char *src1,  unsigned char *
 }
 
 
-extern "C" __global__ void computeEntropyMapKernel(
-					       const float* buf, float* entropy_maps,
-					       int chan, int height, int width)
-{
+__global__ void computeEntropyMapKernel(const float* d_input, float* d_entropy, int chan, int H, int W) {
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
-  int c = blockIdx.z * blockDim.z + threadIdx.z;
 
-  if (x >= width || y >= height || c >= chan) return;
+  if (x >= W || y >= H) return;
 
-  int index = c * height * width + y * width + x;
-  float p = buf[index];
-  float ent = -p * logf(p + 1e-10f);
-  entropy_maps[index] = ent;
+  int offset = y * W + x;
+  float entropy = 0.0f;
+  for (int c = 0; c < chan; ++c) {
+    float val = d_input[c * H * W + offset];
+    if (val > 1e-6) {
+      entropy = -val * logf(val);
+    }
+    d_entropy[c * H * W + offset] = entropy;
+  }
 }
 
 void computeEntropyMapGpu(const float* buf, float* entropy_maps,
@@ -403,4 +404,26 @@ void computeEntropyMapGpu(const float* buf, float* entropy_maps,
   dim3 grid((width + 7)/8, (height + 7)/8, (chan + 3)/4);
   computeEntropyMapKernel<<<grid, block, 0, stream>>>(buf, entropy_maps,
 								  chan, height, width);  
+}
+
+__global__ void generatePeakEntropyMapKernel(const float* d_entropy, unsigned char* d_peakEntropy, int chan, int H, int W) {
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (x < W && y < H) {
+    float max_val = 0.0f;
+    for (int c = 0; c < chan; ++c) {
+      int idx = c * H * W + y * W + x;
+      max_val = fmaxf(max_val, d_entropy[idx]);
+    }
+    int vis_idx = y * W + x;
+    d_peakEntropy[vis_idx] = max(d_peakEntropy[vis_idx], (unsigned char)(255 * max_val));
+  }
+}
+
+void launchComputePeakEntropyMap(const float* d_entropy, unsigned char* d_peakEntropy_u8, int chan, int H, int W, cudaStream_t stream)
+{
+  dim3 block(16, 16);
+  dim3 grid((W + block.x - 1) / block.x, (H + block.y - 1) / block.y);
+  generatePeakEntropyMapKernel<<<grid, block, 0, stream>>>(d_entropy, d_peakEntropy_u8, chan, H, W);
 }

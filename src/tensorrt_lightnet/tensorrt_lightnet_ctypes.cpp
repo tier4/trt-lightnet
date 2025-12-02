@@ -14,6 +14,8 @@
 
 #include <nlohmann/json.hpp>
 #include <tensorrt_lightnet/tensorrt_lightnet.hpp>
+#include <sensor/CalibratedSensorParser.h>
+#include <pcdUtils/pcd2image.hpp>
 #include <cstdint>
 
 constexpr int MAX_STRING_SIZE = 256;
@@ -103,6 +105,51 @@ typedef struct ColormapC_
   unsigned char color[3];
   bool is_dynamic;
 } ColormapC;
+
+/**
+ * @brief C-compatible structure for transferring image data (cv::Mat content) to Python via ctypes.
+ * * This structure holds the flattened image data and its essential metadata.
+ */
+struct C_ImageResult {
+  unsigned char* data; ///< Pointer to the heap-allocated, flattened image data (e.g., BGR sequence).
+  int width;           ///< Image width (columns).
+  int height;          ///< Image height (rows).
+  int channels;        ///< Number of channels (e.g., 3 for CV_8UC3).
+  size_t data_size;    ///< Total size of the data array in bytes (width * height * channels).
+};
+
+/**
+ * @brief C-compatible structure for transferring calibrated sensor data to Python via ctypes.
+ * * This structure replaces C++ STL containers (std::string, std::vector) with
+ * raw pointers and size indicators, allowing safe cross-language communication.
+ */
+struct C_CalibratedSensorInfo {
+  // Strings are transferred as heap-allocated, null-terminated char pointers.
+  const char* token;
+  const char* sensor_token;
+
+  // Vectors are transferred as heap-allocated double pointers with explicit size.
+  const double* translation;
+  size_t translation_size;
+
+  const double* rotation;
+  size_t rotation_size;
+
+  // 2D Array (intrinsic matrix) is flattened and transferred with dimension info.
+  const double* camera_intrinsic;
+  size_t intrinsic_rows;
+  size_t intrinsic_cols;
+
+  const double* camera_distortion;
+  size_t distortion_size;
+
+  const char* name;
+  const char* modality;
+
+  int width;
+  int height;
+};
+
 
 
 // Expose functions to Python via extern "C"
@@ -808,26 +855,28 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     std::vector<tensorrt_lightnet::BBoxInfo> bbox = lightnet->getBbox();
     auto names = lightnet->getNames();
     int num = static_cast<int>(bbox.size());
-    int maxBatchSize = std::min(subnet->getBatchSize(), num);
+    int maxBatchSize = subnet->getBatchSize();    
 
     std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
     std::vector<cv::Mat> cropped;
 
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
-
         for (int t = 0; t < count; t++) {
             if (std::string(target[t]) == names[b.classId]) {
                 flg = true;
                 break;
             }
         }
-
+	
         if (!flg) continue;
 
         cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
         cropped.push_back(image(roi));
+	if (static_cast<int>(cropped.size()) > maxBatchSize) {
+	  break;
+	}	
     }
 
     if (!cropped.size()) {
@@ -838,7 +887,7 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     subnet->doInference(static_cast<int>(cropped.size()));
 
     int actual_batch_size = 0;
-    for (int bs = 0; bs < maxBatchSize; bs++) {
+    for (int bs = 0; bs < num; bs++) {
         auto b = bbox[bs];
         bool flg = false;
 
@@ -860,15 +909,15 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
         }
         subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
         actual_batch_size++;
-    }
+	if (static_cast<int>(actual_batch_size) >= maxBatchSize) {
+	  break;
+	}		
+    }    
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
-
-
   
 
-  
   /**
    * @brief Perform inference with the TrtLightnet model.
    * 
@@ -912,57 +961,57 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     }
   }
   
- /**
- * @brief Retrieve the bounding boxes detected by the subnet in a C-compatible array.
- * 
- * @param instance Pointer to the main TrtLightnet instance.
- * @param size Output parameter for the size of the bounding box array.
- * @return Pointer to an array of BBoxInfoC.
- */
-BBoxInfoC* get_subnet_bbox_array(void* instance, int* size) {
+  /**
+   * @brief Retrieve the bounding boxes detected by the subnet in a C-compatible array.
+   * 
+   * @param instance Pointer to the main TrtLightnet instance.
+   * @param size Output parameter for the size of the bounding box array.
+   * @return Pointer to an array of BBoxInfoC.
+   */
+  BBoxInfoC* get_subnet_bbox_array(void* instance, int* size) {
     if (!instance) {
-        std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
-        return nullptr;
+      std::cerr << "Error: Null pointer in get_bbox_array." << std::endl;
+      return nullptr;
     }
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     std::vector<tensorrt_lightnet::BBoxInfo> bbox_ = lightnet->getSubnetBbox();
 
     bbox_c_array.clear();
     for (const auto& bbox : bbox_) {
-        BBoxInfoC bbox_c;
-        bbox_c.box = {bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2};
-        bbox_c.label = bbox.label;
-        bbox_c.classId = bbox.classId;
-        bbox_c.prob = bbox.prob;
-        bbox_c.isHierarchical = bbox.isHierarchical;
-        bbox_c.subClassId = bbox.subClassId;
-        bbox_c.sin = bbox.sin;
-        bbox_c.cos = bbox.cos;
+      BBoxInfoC bbox_c;
+      bbox_c.box = {bbox.box.x1, bbox.box.y1, bbox.box.x2, bbox.box.y2};
+      bbox_c.label = bbox.label;
+      bbox_c.classId = bbox.classId;
+      bbox_c.prob = bbox.prob;
+      bbox_c.isHierarchical = bbox.isHierarchical;
+      bbox_c.subClassId = bbox.subClassId;
+      bbox_c.sin = bbox.sin;
+      bbox_c.cos = bbox.cos;
 
-        bbox_c.num_keypoints = bbox.keypoint.size();
-        static std::vector<KeypointInfoC> keypoints_c;
-        keypoints_c.clear();
-        for (const auto& kp : bbox.keypoint) {
-            keypoints_c.push_back({kp.id_prob, kp.isOccluded, kp.attr_prob,
-                kp.lx0, kp.ly0, kp.lx1, kp.ly1, kp.rx0, kp.ry0, kp.rx1, kp.ry1, kp.bot, kp.left});
-        }
-        bbox_c.keypoints = keypoints_c.data();
-        bbox_c_array.push_back(bbox_c);
+      bbox_c.num_keypoints = bbox.keypoint.size();
+      static std::vector<KeypointInfoC> keypoints_c;
+      keypoints_c.clear();
+      for (const auto& kp : bbox.keypoint) {
+	keypoints_c.push_back({kp.id_prob, kp.isOccluded, kp.attr_prob,
+	    kp.lx0, kp.ly0, kp.lx1, kp.ly1, kp.rx0, kp.ry0, kp.rx1, kp.ry1, kp.bot, kp.left});
+      }
+      bbox_c.keypoints = keypoints_c.data();
+      bbox_c_array.push_back(bbox_c);
     }
     *size = bbox_c_array.size();
     return bbox_c_array.data();
-}
+  }
 
-/**
- * @brief Apply a blur effect to image regions based on bounding boxes detected by the subnet.
- * 
- * @param instance Pointer to the main TrtLightnet instance.
- * @param sub_instance Pointer to the subnet TrtLightnet instance.
- * @param img_data Image data in BGR format.
- * @param width Image width.
- * @param height Image height.
- */
-void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int width, int height) {
+  /**
+   * @brief Apply a blur effect to image regions based on bounding boxes detected by the subnet.
+   * 
+   * @param instance Pointer to the main TrtLightnet instance.
+   * @param sub_instance Pointer to the subnet TrtLightnet instance.
+   * @param img_data Image data in BGR format.
+   * @param width Image width.
+   * @param height Image height.
+   */
+  void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int width, int height) {
     cv::Mat image(height, width, CV_8UC3, img_data);
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     auto subnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(sub_instance);    
@@ -975,52 +1024,419 @@ void blur_image(void* instance, void* sub_instance, unsigned char* img_data, int
 
     int num = static_cast<int>(bbox.size());
     for (int i = 0; i < num; i++) {
-        auto b = bbox[i];
-        bool flg = false;
-        for (auto &t : subnet_names) {
-            if (t == names[b.classId]) {
-                flg = true;
-                break;
-            }
-        }
-        if (!flg) continue;
+      auto b = bbox[i];
+      bool flg = false;
+      for (auto &t : subnet_names) {
+	if (t == names[b.classId]) {
+	  flg = true;
+	  break;
+	}
+      }
+      if (!flg) continue;
 
-        int subnet_id = -1;
-        for (int j = 0; j < static_cast<int>(subnet_names.size()); j++) {
-            if (names[b.classId] == subnet_names[j]) {
-                subnet_id = j;
-                break;
-            }
-        }
-        if (subnet_id != -1) {
-            b.label = subnet_id;
-            b.classId = subnet_id;    
-            auto bb = {b};
-            lightnet->appendSubnetBbox(bb);
-        }    
+      int subnet_id = -1;
+      for (int j = 0; j < static_cast<int>(subnet_names.size()); j++) {
+	if (names[b.classId] == subnet_names[j]) {
+	  subnet_id = j;
+	  break;
+	}
+      }
+      if (subnet_id != -1) {
+	b.label = subnet_id;
+	b.classId = subnet_id;    
+	auto bb = {b};
+	lightnet->appendSubnetBbox(bb);
+      }    
     }
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 
     std::vector<tensorrt_lightnet::BBoxInfo> subnet_bbox = lightnet->getSubnetBbox();
 
     for (auto &b : subnet_bbox) {
-        if ((b.box.x2 - b.box.x1) > kernel && (b.box.y2 - b.box.y1) > kernel / 2) {
-            int width = b.box.x2 - b.box.x1;
-            int height = b.box.y2 - b.box.y1;
-            int w_offset = width * 0.0;
-            int h_offset = height * 0.0;      
-            cv::Rect roi(b.box.x1 + w_offset, b.box.y1 + h_offset, width - w_offset * 2, height - h_offset * 2);
-            cropped = image(roi);
+      if ((b.box.x2 - b.box.x1) > kernel && (b.box.y2 - b.box.y1) > kernel / 2) {
+	int width = b.box.x2 - b.box.x1;
+	int height = b.box.y2 - b.box.y1;
+	int w_offset = width * 0.0;
+	int h_offset = height * 0.0;      
+	cv::Rect roi(b.box.x1 + w_offset, b.box.y1 + h_offset, width - w_offset * 2, height - h_offset * 2);
+	cropped = image(roi);
 
-            if (width > 320 && height > 320) {
-                cv::blur(cropped, cropped, cv::Size(kernel * 16, kernel * 16));
-            } else if (width > 160 && height > 160) {
-                cv::blur(cropped, cropped, cv::Size(kernel * 8, kernel * 8));
-            } else {
-                cv::blur(cropped, cropped, cv::Size(kernel, kernel));
-            }
-        }
+	if (width > 320 && height > 320) {
+	  cv::blur(cropped, cropped, cv::Size(kernel * 16, kernel * 16));
+	} else if (width > 160 && height > 160) {
+	  cv::blur(cropped, cropped, cv::Size(kernel * 8, kernel * 8));
+	} else {
+	  cv::blur(cropped, cropped, cv::Size(kernel, kernel));
+	}
+      }
     }
-}  
+  }
+
+  /**
+   * @brief Computes entropy maps from softmax outputs for a given TrtLightnet instance.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   */
+  void makeEntropy(void* instance) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to makeEntropy." << std::endl;
+      return;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    lightnet->calcEntropyFromSoftmax(true);
+  }
+
+  /**
+   * @brief Retrieves the vector of entropy visualization maps (as cv::Mat) from a TrtLightnet instance.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   * @return Pointer to a newly allocated std::vector<cv::Mat> holding the entropy maps.
+   */
+  std::vector<cv::Mat>* get_entropy_maps(void* instance) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to get_entropy_maps." << std::endl;
+      return nullptr;
+    }
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    return new std::vector<cv::Mat>(lightnet->getEntropymaps());
+  }
+
+  /**
+   * @brief Returns the number of entropy maps in the provided vector.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @return The number of elements in the vector, or 0 if null.
+   */
+  size_t get_entropy_count(std::vector<cv::Mat>* entropy_maps) {
+    return entropy_maps ? entropy_maps->size() : 0;
+  }
+
+  /**
+   * @brief Returns a pointer to the pixel data of a specific entropy map.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @param index Index of the map to retrieve.
+   * @return Pointer to the image data, or nullptr if invalid.
+   */
+  uint8_t* get_entropy_data(std::vector<cv::Mat>* entropy_maps, size_t index) {
+    if (!entropy_maps || index >= entropy_maps->size()) return nullptr;
+    return entropy_maps->at(index).data;
+  }
+
+  /**
+   * @brief Retrieves the shape (rows, cols, channels) of a specific entropy map.
+   * 
+   * @param entropy_maps Pointer to a vector of cv::Mat.
+   * @param index Index of the map.
+   * @param rows Pointer to an int where the number of rows will be stored.
+   * @param cols Pointer to an int where the number of columns will be stored.
+   * @param channels Pointer to an int where the number of channels will be stored.
+   */
+  void get_entropy_shape(std::vector<cv::Mat>* entropy_maps, size_t index,
+			 int* rows, int* cols, int* channels) {
+    if (!entropy_maps || index >= entropy_maps->size()) return;
+    const auto& mat = entropy_maps->at(index);
+    *rows = mat.rows;
+    *cols = mat.cols;
+    *channels = mat.channels();
+  }
+
+  /**
+   * @brief Frees the memory allocated for a vector of entropy maps.
+   * 
+   * @param entropy_maps Pointer to the vector to be deleted.
+   */
+  void free_entropy_maps(std::vector<cv::Mat>* entropy_maps) {
+    delete entropy_maps;
+  }
+
+  /**
+   * @brief Retrieves the entropy values (per-channel average entropy) as a 2D float array.
+   * 
+   * @param instance Pointer to a std::shared_ptr<TrtLightnet> object, cast as void*.
+   * @param data Output pointer to allocated flat float array (caller must free).
+   * @param outer_size Output: number of outer elements (e.g., softmax heads).
+   * @param inner_size Output: number of channels per head.
+   */
+  void get_entropies(void* instance, float** data, int* outer_size, int* inner_size) {
+    if (!instance) {
+      std::cerr << "Error: Null pointer passed to get_entropies." << std::endl;
+      return;
+    }
+
+    auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
+    const auto& ent = lightnet->getEntropies();
+
+    *outer_size = static_cast<int>(ent.size());
+    *inner_size = ent.empty() ? 0 : static_cast<int>(ent[0].size());
+
+    *data = static_cast<float*>(malloc((*outer_size) * (*inner_size) * sizeof(float)));
+    if (!*data) {
+      std::cerr << "Error: Failed to allocate memory in get_entropies." << std::endl;
+      return;
+    }
+
+    for (int i = 0; i < *outer_size; ++i) {
+      for (int j = 0; j < *inner_size; ++j) {
+	(*data)[i * (*inner_size) + j] = ent[i][j];
+      }
+    }
+  }
+
+  /**
+   * @brief Frees the memory allocated for the entropy array returned by get_entropies().
+   * 
+   * @param data Pointer to the float array to be freed.
+   */
+  void free_entropies(float* data) {
+    if (data) {
+      free(data);
+    }
+  }
+
+  /**
+   * @brief Helper function to safely copy an std::string to a heap-allocated C-style string.
+   * @param s The source std::string.
+   * @return const char* A pointer to the newly allocated null-terminated C string, or nullptr on failure.
+   */
+  const char* copy_string_to_c_char(const std::string& s) {
+    // Allocate space for the string content plus the null terminator (+1)
+    char* c_str = (char*)std::malloc(s.length() + 1);
+    if (c_str) {
+      std::strcpy(c_str, s.c_str());
+    }
+    return c_str;
+  }
+
+  /**
+   * @brief Helper function to safely copy an std::vector<double> to a heap-allocated double array.
+   * @param v The source std::vector<double>.
+   * @return const double* A pointer to the newly allocated double array, or nullptr if empty/failure.
+   */
+  const double* copy_vector_to_c_double_array(const std::vector<double>& v) {
+    if (v.empty()) {
+      return nullptr;
+    }
+    // Allocate space for the array
+    double* arr = (double*)std::malloc(v.size() * sizeof(double));
+    if (arr) {
+      // Copy the elements
+      std::copy(v.begin(), v.end(), arr);
+    }
+    return arr;
+  }
+
+  extern "C" void free_calibrated_info(C_CalibratedSensorInfo info) {
+    // Free all heap memory allocated for strings and arrays within the structure
+    std::free((void*)info.token);
+    std::free((void*)info.sensor_token);
+    std::free((void*)info.translation);
+    std::free((void*)info.rotation);
+    std::free((void*)info.camera_intrinsic);
+    std::free((void*)info.camera_distortion);
+    std::free((void*)info.name);
+    std::free((void*)info.modality);
+  }
+
+  // ----------------------------------------------------
+  // Main Wrapper Implementation
+  // ----------------------------------------------------
+
+  extern "C" C_CalibratedSensorInfo get_calibrated_info_for_python(
+								   const char* caliibrationInfoPath,
+								   const char* camera_name)
+  {
+    // Convert C strings to std::string for the original C++ function call
+    std::string path_str = caliibrationInfoPath;
+    std::string name_str = camera_name;
+
+    // 1. Call the original C++ function
+    // NOTE: This assumes getTargetCalibratedInfo is linked/accessible.
+    CalibratedSensorInfo targetInfo = getTargetCalibratedInfo(path_str, name_str);
+
+    // 2. Initialize and convert the result to the C-compatible structure
+    C_CalibratedSensorInfo c_info = {0}; // Zero-initialization
+
+    // Copy std::string content to heap-allocated C strings
+    c_info.token = copy_string_to_c_char(targetInfo.token);
+    c_info.sensor_token = copy_string_to_c_char(targetInfo.sensor_token);
+    c_info.name = copy_string_to_c_char(targetInfo.name);
+    c_info.modality = copy_string_to_c_char(targetInfo.modality);
+
+    // Copy std::vector<double> content to heap-allocated double arrays
+    c_info.translation = copy_vector_to_c_double_array(targetInfo.translation);
+    c_info.translation_size = targetInfo.translation.size();
+
+    c_info.rotation = copy_vector_to_c_double_array(targetInfo.rotation);
+    c_info.rotation_size = targetInfo.rotation.size();
+
+    c_info.camera_distortion = copy_vector_to_c_double_array(targetInfo.camera_distortion);
+    c_info.distortion_size = targetInfo.camera_distortion.size();
+
+    // Handle the 2D array (camera_intrinsic) by flattening it
+    if (!targetInfo.camera_intrinsic.empty() && !targetInfo.camera_intrinsic[0].empty()) {
+      c_info.intrinsic_rows = targetInfo.camera_intrinsic.size();
+      c_info.intrinsic_cols = targetInfo.camera_intrinsic[0].size();
+      size_t total_size = c_info.intrinsic_rows * c_info.intrinsic_cols;
+
+      double* flat_array = (double*)std::malloc(total_size * sizeof(double));
+      if (flat_array) {
+	size_t k = 0;
+	for (const auto& row : targetInfo.camera_intrinsic) {
+	  // Assuming all rows have the same length (c_info.intrinsic_cols)
+	  std::copy(row.begin(), row.end(), flat_array + k);
+	  k += row.size();
+	}
+	c_info.camera_intrinsic = flat_array;
+      } else {
+	// Handle memory allocation failure
+	c_info.camera_intrinsic = nullptr;
+	c_info.intrinsic_rows = 0;
+	c_info.intrinsic_cols = 0;
+      }
+    } else {
+      c_info.camera_intrinsic = nullptr;
+      c_info.intrinsic_rows = 0;
+      c_info.intrinsic_cols = 0;
+    }
+
+    // 3. Copy primitive types
+    c_info.width = targetInfo.width;
+    c_info.height = targetInfo.height;
+
+    return c_info;
+  }
+
+  void free_image_result(C_ImageResult result) {
+    // Frees the memory allocated for the image data pointer
+    std::free(result.data);
+  }
+
+  /**
+   * @brief Converts the C-compatible calibration structure back to the original C++ structure.
+   * * This function serves as the critical bridge, copying data from C-style pointers/arrays 
+   * (received from Python/ctypes) into native C++ STL containers (std::string, std::vector).
+   * The caller must ensure that the memory pointed to by C_CalibratedSensorInfo is later freed 
+   * using the designated C wrapper free function.
+   * * @param cam_calib_c The C_CalibratedSensorInfo structure passed from Python (ctypes).
+   * @return CalibratedSensorInfo The original C++ structure ready for internal use.
+   */
+  CalibratedSensorInfo convert_c_to_cpp(const C_CalibratedSensorInfo& cam_calib_c) {
+    CalibratedSensorInfo cam_calib;
+
+    // 1. Strings (const char* to std::string)
+    // Safely convert C-style null-terminated strings, checking for nullptr.
+    if (cam_calib_c.token) {
+      cam_calib.token = std::string(cam_calib_c.token);
+    }
+    if (cam_calib_c.sensor_token) {
+      cam_calib.sensor_token = std::string(cam_calib_c.sensor_token);
+    }
+    if (cam_calib_c.name) {
+      cam_calib.name = std::string(cam_calib_c.name);
+    }
+    if (cam_calib_c.modality) {
+      cam_calib.modality = std::string(cam_calib_c.modality);
+    }
+
+    // 2. 1D Vectors (double* and size_t to std::vector<double>)
+    // Copy data from raw pointers using range assignment.
+    if (cam_calib_c.translation && cam_calib_c.translation_size > 0) {
+      cam_calib.translation.assign(
+				   cam_calib_c.translation,
+				               cam_calib_c.translation + cam_calib_c.translation_size
+				   );
+    }
+
+    if (cam_calib_c.rotation && cam_calib_c.rotation_size > 0) {
+      cam_calib.rotation.assign(
+				cam_calib_c.rotation,
+				            cam_calib_c.rotation + cam_calib_c.rotation_size
+				);
+    }
+
+    if (cam_calib_c.camera_distortion && cam_calib_c.distortion_size > 0) {
+      cam_calib.camera_distortion.assign(
+					 cam_calib_c.camera_distortion,
+					             cam_calib_c.camera_distortion + cam_calib_c.distortion_size
+					 );
+    }
+
+    // 3. 2D Vector (Flattened double* to std::vector<std::vector<double>>)
+    // Reconstruct the 2D matrix structure from the flattened array and dimension info.
+    if (cam_calib_c.camera_intrinsic &&
+	        cam_calib_c.intrinsic_rows > 0 &&
+	cam_calib_c.intrinsic_cols > 0)
+      {
+	const double* ptr = cam_calib_c.camera_intrinsic;
+
+	for (size_t i = 0; i < cam_calib_c.intrinsic_rows; ++i) {
+	  // Calculate start and end indices for the current row
+	  size_t row_start_index = i * cam_calib_c.intrinsic_cols;
+	  size_t row_end_index = row_start_index + cam_calib_c.intrinsic_cols;
+
+	  // Assign the row elements to a new std::vector
+	  std::vector<double> row;
+	  row.assign(ptr + row_start_index, ptr + row_end_index);
+
+	  cam_calib.camera_intrinsic.push_back(std::move(row));
+	}
+      }
+
+    // 4. Primitive types
+    cam_calib.width = cam_calib_c.width;
+    cam_calib.height = cam_calib_c.height;
+
+    // Note: The memory pointed to by pointers inside cam_calib_c is NOT freed here.
+    // It is the responsibility of the Python caller to invoke free_calibrated_info.
+
+    return cam_calib;
+  }
+
+  C_ImageResult make_range_image_for_python(
+						       const char* inputName,
+						       C_CalibratedSensorInfo cam_calib_c,
+						       float max_distance)
+  {
+    // Initialize result struct
+    C_ImageResult c_result = {0};
+
+    try {
+      // 1. Convert C types back to C++ types
+      CalibratedSensorInfo cam_calib = convert_c_to_cpp(cam_calib_c);
+      std::string inputNameStr(inputName);
+
+      // 2. Instantiate the Pcd2image class and call the core C++ logic
+      pcd2image::Pcd2image p2i;
+      cv::Mat result_mat = p2i.makeRangeImageFromCalibration(inputNameStr, cam_calib, max_distance);
+
+      // 3. Convert cv::Mat to C-compatible structure
+      if (!result_mat.empty() && result_mat.isContinuous() && result_mat.type() == CV_8UC3) {
+	c_result.width = result_mat.cols;
+	c_result.height = result_mat.rows;
+	c_result.channels = result_mat.channels();
+
+	// Calculate total size in bytes
+	size_t size = result_mat.total() * result_mat.elemSize();
+	c_result.data_size = size;
+
+	// Allocate memory on the heap and copy the data
+	unsigned char* data_copy = (unsigned char*)std::malloc(size);
+	if (data_copy) {
+	  std::memcpy(data_copy, result_mat.data, size);
+	  c_result.data = data_copy;
+	} else {
+	  std::cerr << "Error: Failed to allocate memory for image copy." << std::endl;
+	}
+      } else if (!result_mat.empty() && !result_mat.isContinuous()) {
+	std::cerr << "Warning: cv::Mat is not continuous. Copy not implemented." << std::endl;
+      }
+
+    } catch (const std::exception& e) {
+      std::cerr << "Error in C++ wrapper: " << e.what() << std::endl;
+    }
+
+    return c_result;
+  }
 }
 
