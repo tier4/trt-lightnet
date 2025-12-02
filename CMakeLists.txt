@@ -229,17 +229,34 @@ add_executable(trt-lightnet
   src/lightnet_detector.cpp
   )
 
+# Get cnpy include directories from the target if available
+if(TARGET cnpy)
+  get_target_property(CNPY_INCLUDE_DIRS cnpy INTERFACE_INCLUDE_DIRECTORIES)
+  if(NOT CNPY_INCLUDE_DIRS)
+    # Fallback: use FetchContent source directory
+    set(CNPY_INCLUDE_DIRS "${CMAKE_BINARY_DIR}/_deps/cnpy-src")
+  endif()
+endif()
+
 target_include_directories(trt-lightnet PRIVATE
   include
   include/pcdUtils
   include/sensor
   ${EIGEN3_INCLUDE_DIR}
   ${_CUDA_INCLUDE_DIRS}
+  ${CNPY_INCLUDE_DIRS}
   )
 
 # Link against the shared library and other required libs
 # z is explicitly added because the executable may reference zlib symbols directly/indirectly
-target_link_libraries(trt-lightnet PRIVATE lightnetinfer ${OpenCV_LIBS} z)
+# cnpy is explicitly linked to resolve symbols and inherit include directories
+if(TARGET cnpy)
+  target_link_libraries(trt-lightnet PRIVATE lightnetinfer cnpy ${OpenCV_LIBS} z)
+elseif(CNPY_LIB)
+  target_link_libraries(trt-lightnet PRIVATE lightnetinfer ${CNPY_LIB} ${OpenCV_LIBS} z)
+else()
+  target_link_libraries(trt-lightnet PRIVATE lightnetinfer ${OpenCV_LIBS} z)
+endif()
 
 # If using CUDAToolkit, include dirs are already covered; fallback path handled above
 

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <nlohmann/json.hpp>
 
 // Alias for the JSON library
@@ -16,6 +17,13 @@ struct Sensor {
   std::string channel;   ///< The channel or name associated with the sensor.
   std::string modality;  ///< Modality of the sensor (e.g., "lidar", "camera").
 };
+
+struct Resolution {
+  int width;
+  int height;
+};
+
+using ResolutionMap = std::map<std::string, Resolution>;
 
 /**
  * Class to parse sensor data from a JSON file.
@@ -41,6 +49,7 @@ class SensorParser {
   static std::string getSensorNameFromToken(const std::vector<Sensor>& sensors, const std::string& sensorToken);
 
   static std::string getSensorModalityFromToken(const std::vector<Sensor>& sensors, const std::string& sensorToken);
+  static void parseCameraResolutions(const std::string& fileName, ResolutionMap& outResolutions);
 };
 
 #endif // SENSORPARSER_H

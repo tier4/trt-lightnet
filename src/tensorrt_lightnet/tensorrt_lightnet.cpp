@@ -2357,7 +2357,7 @@ namespace tensorrt_lightnet
  * It computes entropy values for each channel and generates both scalar and color-mapped
  * entropy maps for visualization.
  */
-  void TrtLightnet::calcEntropyFromSoftmax()
+  void TrtLightnet::calcEntropyFromSoftmax(const bool is_grayscale)
   {
     // Channel size of detection output = (4 + 1 + num_class_) * num_anchor_
     const int det_chan_size = (4 + 1 + num_class_) * num_anchor_;
@@ -2377,6 +2377,9 @@ namespace tensorrt_lightnet
 
       // Setup buffers
       cv::Mat ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC3);
+      if (is_grayscale) {
+	ent_map = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+      }
       std::vector<float> entropy(chan, 0.0f);
 
       // Compute entropy map on GPU
@@ -2417,10 +2420,15 @@ namespace tensorrt_lightnet
       for (int y = 0; y < outputH; ++y) {
 	for (int x = 0; x < outputW; ++x) {
 	  const auto& color = jet_colormap[peak_entropy[y * outputW + x]];
-	  auto& pixel = ent_map.at<cv::Vec3b>(y, x);
-	  pixel[0] = color[0];
-	  pixel[1] = color[1];
-	  pixel[2] = color[2];
+	  if (is_grayscale) {
+	    auto& pixel = ent_map.at<uchar>(y, x);
+	    pixel = peak_entropy[y * outputW + x];
+	  } else {
+	    auto& pixel = ent_map.at<cv::Vec3b>(y, x);	    
+	    pixel[0] = color[0];
+	    pixel[1] = color[1];
+	    pixel[2] = color[2];
+	  }
 	}
       }
       entropies_.push_back(std::move(entropy));
