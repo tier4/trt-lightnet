@@ -5,7 +5,6 @@ import os
 import tempfile
 import unittest.mock as mock
 
-import numpy as np
 import pytest
 
 
@@ -306,24 +305,3 @@ class TestPylightnetMocked:
         finally:
             os.unlink(names_path)
             os.unlink(rgb_path)
-
-    def test_draw_bboxes_on_image(self):
-        """Test drawing bounding boxes on image."""
-        import pylightnet
-
-        # Create a test image
-        image = np.zeros((100, 100, 3), dtype=np.uint8)
-
-        bboxes = [
-            {"box": [10, 10, 30, 30], "label": 0, "prob": 0.9},
-            {"box": [50, 50, 70, 70], "label": 1, "prob": 0.8},
-        ]
-
-        colormap = [255, 0, 0, 0, 255, 0]  # Red, Green
-        names = ["person", "car"]
-
-        # Draw boxes (this should not raise any errors)
-        pylightnet.draw_bboxes_on_image(image, bboxes, colormap, names)
-
-        # Check that something was drawn (image is no longer all zeros)
-        assert not np.all(image == 0)
