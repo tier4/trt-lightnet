@@ -1268,3 +1268,50 @@ def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
                 blurred_image[y1:y2, x1:x2] = blurred_roi
 
     return blurred_image
+
+# Function to draw bounding boxes
+def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
+    for bbox in bboxes:
+        x1, y1, x2, y2 = bbox["box"]
+        label = bbox["label"]
+        class_name = names[label] if label < len(names) else "Unknown"
+        color = (
+            colormap[label * 3 + 2],
+            colormap[label * 3 + 1],
+            colormap[label * 3 + 0],
+        )
+        if filled is True:
+            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, -1)
+        else:
+            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+        cv2.putText(
+            image,
+            f"{class_name} ({bbox['prob']:.2f})",
+            (int(x1), int(y1) - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            2,
+        )
+        if "attribute_prob" in bbox and bbox["attribute_prob"] > 0.1:
+            attr = bbox["attribute"]
+            attr_prob = bbox["attribute_prob"]
+            cv2.putText(
+                image,
+                f"--> {attr} ({attr_prob:.2f})",
+                (int(x1), int(y1) + 20),
+                cv2.FONT_ITALIC,
+                0.5,
+                color,
+                2,
+            )
+        if "sub_name" in bbox:
+            cv2.putText(
+                image,
+                f"--> {bbox['sub_name']}",
+                (int(x1), int(y1) + 20),
+                cv2.FONT_ITALIC,
+                0.5,
+                color,
+                2,
+            )
