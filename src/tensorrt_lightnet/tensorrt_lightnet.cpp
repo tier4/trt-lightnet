@@ -3322,68 +3322,25 @@ namespace tensorrt_lightnet
       }
     }
   }
-  /*
-  std::string TrtLightnet::getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap)
-  {
-      
-    json::object_t imageAnnotationsOrdered;
-    imageAnnotationsOrdered["name"] = image_name;
-    imageAnnotationsOrdered["width"] = width;
-    imageAnnotationsOrdered["height"] = height;  
-    imageAnnotationsOrdered["annotations"] = json::array();    
-    int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
-    
-    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
-      const auto dims = trt_common_->getBindingDimensions(i);
-      const int outputW = dims.d[3];
-      const int outputH = dims.d[2];
-      const int chan = dims.d[1];
-      // Identifying tensors by channel size and name for segmentation masks.      
-      if (chan_size != chan) {
-	std::string name = trt_common_->getIOTensorName(i);
-	if (contain(name, "argmax")) { // Check if tensor name contains "argmax".
-	  const int *argmax = (int *)(output_h_.at(i - 1).get());
-	  
-	  for (int c = 1; c < (int)colormap.size(); c++) {
-	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
-	    cv::Mat resized;	    
-	    for (int x = 0; x < outputW; x++) {
-	      for (int y = 0; y < outputH; y++) {
-		const int id = argmax[static_cast<int>(x + outputW * y)];
-		if (id == c) {
-		  mask.at<uchar>(y, x) = 255;
-		}
-	      }	      
-	    }
-	    cv::resize(mask, resized, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
-	    std::vector<std::vector<cv::Point>> contours = get_polygons(resized);
 
-	    for (size_t i = 0; i < contours.size(); ++i) {
-	      json::object_t annotationOrdered;      
-	      annotationOrdered["type"] = "segmentation";
-	      annotationOrdered["title"] = colormap[c].name;
-	      annotationOrdered["value"] = colormap[c].name;	      
-	      json contourJson;
-	      json pointsArray = json::array();
-	      for (size_t j = 0; j < contours[i].size(); ++j) {
-		pointsArray.push_back(contours[i][j].x);
-		pointsArray.push_back(contours[i][j].y);
-	      }
-	      annotationOrdered["points"].push_back({pointsArray});	      
-	      imageAnnotationsOrdered["annotations"].push_back(annotationOrdered);	      
-	    }
-	  }
-	}
-
-      }
-    }
-    std::string json_string = json(imageAnnotationsOrdered).dump();
-
-    return json_string;
-  }  
-  */  
- 
+  /**
+   * @brief Extracts per-class polygons from semantic segmentation outputs (argmax/softmax) and generates a JSON string.
+   *
+   * <p>Supported formats:</p>
+   * <ul>
+   *   <li>Argmax: int32, [H, W]</li>
+   *   <li>Softmax: float32, [C, H, W] (recommended) or [H, W, C]</li>
+   * </ul>
+   * For Softmax inputs, each class probability map is binarized using a threshold, contours are extracted, and polygons are generated.
+   * The background class (ID=0) is skipped.
+   *
+   * @param image_name  The filename of the input image.
+   * @param width       The original image width (used to scale polygon coordinates).
+   * @param height      The original image height (used to scale polygon coordinates).
+   * @param colormap    Mapping between class IDs and names (index = class ID, assumes 0 is background).
+   * @return            A JSON string containing the generated annotations.
+   */
   std::string TrtLightnet::getSegmentationAnnotationStr(
 							const std::string image_name, int width, int height, std::vector<Colormap> colormap)
   {
@@ -3392,79 +3349,196 @@ namespace tensorrt_lightnet
     imageAnnotationsOrdered["width"] = width;
     imageAnnotationsOrdered["height"] = height;
     imageAnnotationsOrdered["annotations"] = json::array();
-    int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
-    for (int i = 1; i < trt_common_->getNbBindings(); i++) {
+    // Channel size for detection head; used to skip non-segmentation outputs
+    const int chan_size = (4 + 1 + num_class_) * num_anchor_;
+
+    /**
+     * @brief Convert a binary mask to polygons and append to annotation list for class c.
+     *
+     * @param mask_bin Binary mask at network output resolution (CV_8UC1)
+     * @param c        Class id
+     * @param scaleX   Scale factor from output width to original image width
+     * @param scaleY   Scale factor from output height to original image height
+     * @param out_ann  Accumulator: per-class list of json annotations
+     */
+      auto push_annotations_from_mask =
+    [&](const cv::Mat& mask_bin, int c, double scaleX, double scaleY,
+	std::vector<std::vector<json::object_t>>& out_ann)
+    {
+      // Find polygons from the binary mask
+      std::vector<std::vector<cv::Point>> contours = get_polygons(mask_bin);
+
+      std::vector<json::object_t> thread_annotations;
+      thread_annotations.reserve(contours.size());
+
+      for (size_t k = 0; k < contours.size(); ++k) {
+	json::object_t annotationOrdered;
+	annotationOrdered["type"]  = "segmentation";
+	annotationOrdered["title"] = colormap[c].name;
+	annotationOrdered["value"] = colormap[c].name;
+
+	// Prepare a flat points array: [x0, y0, x1, y1, ...]
+	json pointsArray = json::array();
+
+	// Reserve capacity on the underlying array (array_t), not on basic_json itself
+	auto& arr = pointsArray.get_ref<json::array_t&>();
+	arr.reserve(contours[k].size() * 2);
+
+	for (size_t j = 0; j < contours[k].size(); ++j) {
+	  // Scale polygon coordinates back to original image size
+	  const int scaled_x = static_cast<int>(contours[k][j].x * scaleX);
+	  const int scaled_y = static_cast<int>(contours[k][j].y * scaleY);
+	  arr.push_back(scaled_x);
+	  arr.push_back(scaled_y);
+	}
+
+	// Assuming labelme-like schema (array of rings)
+	annotationOrdered["points"].push_back({pointsArray});
+	thread_annotations.push_back(std::move(annotationOrdered));
+      }
+
+      out_ann[c] = std::move(thread_annotations);
+    };
+
+    // Softmax post-processing parameters
+    constexpr float TH       = 0.5f; // Probability threshold for binarization
+    constexpr int   MIN_AREA = 0;    // Minimum area to keep a component (0 disables filtering)
+
+    for (int i = 1; i < trt_common_->getNbBindings(); ++i) {
       const auto dims = trt_common_->getBindingDimensions(i);
+
+      // Expect 4D tensor for segmentation outputs: N, C, H, W (or N, H, W, C)
+      if (dims.nbDims < 4) {
+	continue; // Not a segmentation output
+      }
+
+      // Infer NCHW-like order (common in TensorRT). If the tensor is NHWC,
+      // we will detect it by comparing channel count with colormap size later.
       const int outputW = dims.d[3];
       const int outputH = dims.d[2];
-      const int chan = dims.d[1];
+      const int chan    = dims.d[1];
 
-      if (chan_size != chan) {
-	std::string name = trt_common_->getIOTensorName(i);
-	if (contain(name, "argmax")) {
-	  const int *argmax = (int *)(output_h_.at(i - 1).get());
+      // Scale factors to map output resolution to original image size
+      const double scaleX = static_cast<double>(width)  / std::max(1, outputW);
+      const double scaleY = static_cast<double>(height) / std::max(1, outputH);
 
-	  std::vector<std::vector<json::object_t>> annotations(colormap.size());
+      // Skip detection-like heads by channel size
+      if (chan_size == chan) {
+	continue;
+      }
 
-	  const double scaleX = static_cast<double>(width) / outputW;
-	  const double scaleY = static_cast<double>(height) / outputH;
+      const std::string name = trt_common_->getIOTensorName(i);
 
-#pragma omp parallel for num_threads(2)
-	  for (int c = 1; c < (int)colormap.size(); c++) {
-	    cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+      // ===== Argmax path (int32, [H, W]) =====
+      if (contain(name, "argmax")) {
+	const int* argmax = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
 
-	    for (int y = 0; y < outputH; y++) {
-	      uchar* row = mask.ptr<uchar>(y); 
-	      for (int x = 0; x < outputW; x++) {
-		const int id = argmax[static_cast<int>(x + outputW * y)];
-		if (id == c) {
-		  row[x] = 255;
-		}
+	std::vector<std::vector<json::object_t>> annotations(colormap.size());
+
+	for (int c = 1; c < static_cast<int>(colormap.size()); ++c) { // skip background 0
+	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+
+	  // Build binary mask for class c
+	  for (int y = 0; y < outputH; ++y) {
+	    uchar* row = mask.ptr<uchar>(y);
+	    const int base = y * outputW;
+	    for (int x = 0; x < outputW; ++x) {
+	      const int id = argmax[base + x];
+	      if (id == c) {
+		row[x] = 255;
 	      }
 	    }
-	    
-	    std::vector<std::vector<cv::Point>> contours = get_polygons(mask);
-
-	    std::vector<json::object_t> thread_annotations;
-
-	    for (size_t i = 0; i < contours.size(); ++i) {
-	      json::object_t annotationOrdered;
-	      annotationOrdered["type"] = "segmentation";
-	      annotationOrdered["title"] = colormap[c].name;
-	      annotationOrdered["value"] = colormap[c].name;
-
-	      json pointsArray = json::array();
-	      for (size_t j = 0; j < contours[i].size(); ++j) {
-		int scaled_x = static_cast<int>(contours[i][j].x * scaleX);
-		int scaled_y = static_cast<int>(contours[i][j].y * scaleY);
-		pointsArray.push_back(scaled_x);
-		pointsArray.push_back(scaled_y);
-	      }
-	      annotationOrdered["points"].push_back({pointsArray});
-
-	      thread_annotations.push_back(annotationOrdered);
-	    }
-
-	    annotations[c] = std::move(thread_annotations);
 	  }
 
-	  for (const auto &ann_set : annotations) {
-	    for (const auto &annotation : ann_set) {
-	      if (!annotation.empty()) {
-		imageAnnotationsOrdered["annotations"].push_back(annotation);
+	  // Extract polygons and append JSON
+	  push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
+	}
+
+	// Append all annotations to the image-level container
+	for (const auto& ann_set : annotations) {
+	  for (const auto& annotation : ann_set) {
+	    if (!annotation.empty()) {
+	      imageAnnotationsOrdered["annotations"].push_back(annotation);
+	    }
+	  }
+	}
+      }
+
+      // ===== Softmax path (float32, [C, H, W] or [H, W, C]) =====
+      if (contain(name, "softmax")) {
+	const float* probs = reinterpret_cast<const float*>(output_h_.at(i - 1).get());
+
+	// Detect layout by class count match
+	const bool looks_like_chw = (chan == static_cast<int>(colormap.size()));
+	const int C = looks_like_chw ? chan : dims.d[3];
+
+	// Validate class count
+	if (C != static_cast<int>(colormap.size())) {
+	  // Class count mismatch; skip safely
+	  continue;
+	}
+
+	std::vector<std::vector<json::object_t>> annotations(C);
+
+	for (int c = 1; c < C; ++c) { // skip background 0
+	  // Get per-class probability map as cv::Mat1f
+	  cv::Mat1f prob_map;
+	  if (looks_like_chw) {
+	    // Layout: [C, H, W] continuous
+	    const float* plane = probs + static_cast<size_t>(c) * outputH * outputW;
+	    prob_map = cv::Mat1f(outputH, outputW, const_cast<float*>(plane));
+	  } else {
+	    // Layout: [H, W, C] (make a contiguous copy to be safe)
+	    cv::Mat1f tmp(outputH, outputW);
+	    for (int y = 0; y < outputH; ++y) {
+	      float* trow = tmp.ptr<float>(y);
+	      for (int x = 0; x < outputW; ++x) {
+		const size_t idx = static_cast<size_t>(y) * outputW * C
+		  + static_cast<size_t>(x) * C + c;
+		trow[x] = probs[idx];
 	      }
+	    }
+	    prob_map = std::move(tmp);
+	  }
+
+	  // Binarize: mask_bin = (prob >= TH)
+	  cv::Mat mask_bin;
+	  cv::compare(prob_map, TH, mask_bin, cv::CmpTypes::CMP_GE);
+	  mask_bin.convertTo(mask_bin, CV_8U, 255.0);
+
+	  // Optional: remove tiny connected components
+	  if (MIN_AREA > 0) {
+	    cv::Mat labels, stats, centroids;
+	    const int n_labels = cv::connectedComponentsWithStats(
+								  mask_bin, labels, stats, centroids, 8, CV_32S);
+	    for (int lbl = 1; lbl < n_labels; ++lbl) {
+	      const int area = stats.at<int>(lbl, cv::CC_STAT_AREA);
+	      if (area < MIN_AREA) {
+		mask_bin.setTo(0, labels == lbl);
+	      }
+	    }
+	  }
+
+	  // Extract polygons and append JSON
+	  push_annotations_from_mask(mask_bin, c, scaleX, scaleY, annotations);
+	}
+
+	// Append all annotations to the image-level container
+	for (const auto& ann_set : annotations) {
+	  for (const auto& annotation : ann_set) {
+	    if (!annotation.empty()) {
+	      imageAnnotationsOrdered["annotations"].push_back(annotation);
 	    }
 	  }
 	}
       }
     }
 
-    std::string json_string = json(imageAnnotationsOrdered).dump();
-    return json_string;
+    // Ensure return is inside the function body
+    return json(imageAnnotationsOrdered).dump();
   }
-  
-  
+
   /**
    * @brief Retrieves the input size of the TensorRT model.
    *
