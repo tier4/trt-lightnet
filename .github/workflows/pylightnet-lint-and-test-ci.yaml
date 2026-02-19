@@ -32,8 +32,8 @@ jobs:
         run: |
           mkdir -p ../build/_deps/cnpy-build  # dummy library paths
           touch ../build/_deps/cnpy-build/libcnpy.so ../build/liblightnetinfer.so
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install .[dev]
+          python -m pip install --upgrade pip "setuptools==80.9.0" wheel
+          python -m pip install .[dev] --no-build-isolation
 
       - name: Run the formatter
         working-directory: ./python
