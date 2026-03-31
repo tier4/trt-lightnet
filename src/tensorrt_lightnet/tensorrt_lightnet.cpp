@@ -52,6 +52,7 @@ SOFTWARE.
 #include <string>
 #include <vector>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <filesystem> // Use standardized filesystem library
@@ -96,6 +97,16 @@ std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
   // 🔄 CHAIN_APPROX_SIMPLE を使用してデータ量削減
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   return contours;
+}
+
+static bool should_log_polygon_stats()
+{
+  const char * env = std::getenv("COMET_DEBUG_POLYGON_STATS");
+  if (env == nullptr || env[0] == '\0') {
+    return false;
+  }
+  const std::string v(env);
+  return v == "1" || v == "true" || v == "TRUE" || v == "yes" || v == "YES";
 }
 
 inline std::size_t get_dtype_size_bytes(nvinfer1::DataType dt)
@@ -3390,6 +3401,23 @@ namespace tensorrt_lightnet
     // Channel size for detection head; used to skip non-segmentation outputs
     const int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
+    struct PolygonStats {
+      int total_ann = 0;
+      int total_contours = 0;
+      int total_points = 0;
+      std::vector<int> ann_by_class;
+      std::vector<int> contours_by_class;
+      std::vector<int> points_by_class;
+    };
+    PolygonStats stats_storage;
+    PolygonStats * poly_stats = nullptr;
+    if (should_log_polygon_stats()) {
+      stats_storage.ann_by_class.assign(colormap.size(), 0);
+      stats_storage.contours_by_class.assign(colormap.size(), 0);
+      stats_storage.points_by_class.assign(colormap.size(), 0);
+      poly_stats = &stats_storage;
+    }
+
     /**
      * @brief Convert a binary mask to polygons and append to annotation list for class c.
      *
@@ -3405,6 +3433,19 @@ namespace tensorrt_lightnet
     {
       // Find polygons from the binary mask
       std::vector<std::vector<cv::Point>> contours = get_polygons(mask_bin);
+
+      if (poly_stats != nullptr) {
+	const int n = static_cast<int>(contours.size());
+	poly_stats->total_ann += n;
+	poly_stats->total_contours += n;
+	poly_stats->ann_by_class[c] += n;
+	poly_stats->contours_by_class[c] += n;
+	for (const auto& ct : contours) {
+	  const int psz = static_cast<int>(ct.size());
+	  poly_stats->total_points += psz;
+	  poly_stats->points_by_class[c] += psz;
+	}
+      }
 
       std::vector<json::object_t> thread_annotations;
       thread_annotations.reserve(contours.size());
@@ -3588,6 +3629,22 @@ namespace tensorrt_lightnet
 	    }
 	  }
 	}
+      }
+    }
+
+    if (poly_stats != nullptr && poly_stats->total_ann > 0) {
+      std::cout << "[polygon-stats] " << image_name
+		<< " total_annotations=" << poly_stats->total_ann
+		<< " total_contours=" << poly_stats->total_contours
+		<< " total_points=" << poly_stats->total_points << std::endl;
+      for (size_t c = 1; c < colormap.size(); ++c) {
+	if (poly_stats->ann_by_class[c] == 0) {
+	  continue;
+	}
+	std::cout << "[polygon-stats]   class=" << colormap[c].name
+		  << " annotations=" << poly_stats->ann_by_class[c]
+		  << " contours=" << poly_stats->contours_by_class[c]
+		  << " points=" << poly_stats->points_by_class[c] << std::endl;
       }
     }
 
