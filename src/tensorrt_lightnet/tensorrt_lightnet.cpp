@@ -3468,47 +3468,53 @@ namespace tensorrt_lightnet
       const std::string name = trt_common_->getIOTensorName(i);
       const auto dataType = trt_common_->getBindingDataType(i);
 
-      // ===== Argmax path (int32, [H, W]) =====
+      // ===== Argmax path (int32/int64, [H, W]) =====
       if (contain(name, "argmax")) {
-        std::vector<std::vector<json::object_t>> annotations(colormap.size());
-        auto build_masks_from_argmax = [&](auto read_id_fn) {
-          for (int c = 1; c < static_cast<int>(colormap.size()); ++c) {  // skip background 0
-            cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
-
-            // Build binary mask for class c
-            for (int y = 0; y < outputH; ++y) {
-              uchar* row = mask.ptr<uchar>(y);
-              const int base = y * outputW;
-              for (int x = 0; x < outputW; ++x) {
-                const int id = read_id_fn(base + x);
-                if (id == c) {
-                  row[x] = 255;
-                }
-              }
-            }
-
-            // Extract polygons and append JSON
-            push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
-          }
-        };
-
+        const bool is_argmax_i32 = (dataType == nvinfer1::DataType::kINT32);
 #if TRT_VER_NUM >= 10000
-        if (dataType == nvinfer1::DataType::kINT64) {
-          const int64_t* argmax64 = reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get());
-          build_masks_from_argmax([&](const int idx) { return static_cast<int>(argmax64[idx]); });
-        } else if (dataType == nvinfer1::DataType::kINT32) {
-          const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
-          build_masks_from_argmax([&](const int idx) { return argmax32[idx]; });
-        } else {
+        const bool is_argmax_i64 = (dataType == nvinfer1::DataType::kINT64);
+        if (!is_argmax_i32 && !is_argmax_i64) {
           continue;
         }
 #else
-        if (dataType != nvinfer1::DataType::kINT32) {
+        if (!is_argmax_i32) {
           continue;
         }
-        const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
-        build_masks_from_argmax([&](const int idx) { return argmax32[idx]; });
 #endif
+        const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
+#if TRT_VER_NUM >= 10000
+        const int64_t* argmax64 =
+          is_argmax_i64 ? reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get()) : nullptr;
+#endif
+        auto read_argmax_id = [&](const int idx) -> int {
+#if TRT_VER_NUM >= 10000
+          if (is_argmax_i64) {
+            return static_cast<int>(argmax64[idx]);
+          }
+#endif
+          return argmax32[idx];
+        };
+
+        std::vector<std::vector<json::object_t>> annotations(colormap.size());
+
+        for (int c = 1; c < static_cast<int>(colormap.size()); ++c) {  // skip background 0
+          cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+
+          // Build binary mask for class c
+          for (int y = 0; y < outputH; ++y) {
+            uchar* row = mask.ptr<uchar>(y);
+            const int base = y * outputW;
+            for (int x = 0; x < outputW; ++x) {
+              const int id = read_argmax_id(base + x);
+              if (id == c) {
+                row[x] = 255;
+              }
+            }
+          }
+
+          // Extract polygons and append JSON
+          push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
+        }
 
         // Append all annotations to the image-level container
         for (const auto& ann_set : annotations) {
