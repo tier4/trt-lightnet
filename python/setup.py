@@ -27,10 +27,10 @@ except ImportError as e:
     print(
         "Error: Failed to import 'build' from setuptools.command.build\n"
         "\n"
-        "This package requires setuptools>=80.9.0,<81.0.0\n"
+        "This package requires setuptools>=80.9.0 (for the build backend).\n"
         "\n"
-        "Please upgrade setuptools to the required version:\n"
-        "  pip install 'setuptools>=80.9.0,<81.0.0'\n"
+        "Please upgrade setuptools:\n"
+        "  pip install -U 'setuptools>=80.9.0'\n"
         "\n"
         f"Original error: {e}",
         file=sys.stderr,
@@ -174,7 +174,8 @@ setup(
         "numpy<2.0",
     ],
     setup_requires=[
-        "setuptools>=80.9.0,<81.0.0",
+        # Upper bound removed: pip's build isolation often supplies setuptools 82+ (PEP 517).
+        "setuptools>=80.9.0",
     ],
     extras_require={
         "dev": [
