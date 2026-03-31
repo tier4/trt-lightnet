@@ -3470,55 +3470,56 @@ namespace tensorrt_lightnet
 
       // ===== Argmax path (int32, [H, W]) =====
       if (contain(name, "argmax")) {
-	if (dataType != nvinfer1::DataType::kINT32
+        if (
+          dataType != nvinfer1::DataType::kINT32
 #if TRT_VER_NUM >= 10000
-            && dataType != nvinfer1::DataType::kINT64
+          && dataType != nvinfer1::DataType::kINT64
 #endif
-            ) {
-	  continue;
-	}
-	const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
+        ) {
+          continue;
+        }
+        const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
 #if TRT_VER_NUM >= 10000
-	const int64_t* argmax64 = reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get());
+        const int64_t* argmax64 = reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get());
 #endif
 
-	std::vector<std::vector<json::object_t>> annotations(colormap.size());
+        std::vector<std::vector<json::object_t>> annotations(colormap.size());
 
-	for (int c = 1; c < static_cast<int>(colormap.size()); ++c) { // skip background 0
-	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+        for (int c = 1; c < static_cast<int>(colormap.size()); ++c) {  // skip background 0
+          cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
 
-	  // Build binary mask for class c
-	  for (int y = 0; y < outputH; ++y) {
-	    uchar* row = mask.ptr<uchar>(y);
-	    const int base = y * outputW;
-	    for (int x = 0; x < outputW; ++x) {
-	      int id = 0;
+          // Build binary mask for class c
+          for (int y = 0; y < outputH; ++y) {
+            uchar* row = mask.ptr<uchar>(y);
+            const int base = y * outputW;
+            for (int x = 0; x < outputW; ++x) {
+              int id = 0;
 #if TRT_VER_NUM >= 10000
-	      if (dataType == nvinfer1::DataType::kINT64) {
-		id = static_cast<int>(argmax64[base + x]);
-	      } else
+              if (dataType == nvinfer1::DataType::kINT64) {
+                id = static_cast<int>(argmax64[base + x]);
+              } else
 #endif
-	      {
-		id = argmax32[base + x];
-	      }
-	      if (id == c) {
-		row[x] = 255;
-	      }
-	    }
-	  }
+              {
+                id = argmax32[base + x];
+              }
+              if (id == c) {
+                row[x] = 255;
+              }
+            }
+          }
 
-	  // Extract polygons and append JSON
-	  push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
-	}
+          // Extract polygons and append JSON
+          push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
+        }
 
-	// Append all annotations to the image-level container
-	for (const auto& ann_set : annotations) {
-	  for (const auto& annotation : ann_set) {
-	    if (!annotation.empty()) {
-	      imageAnnotationsOrdered["annotations"].push_back(annotation);
-	    }
-	  }
-	}
+        // Append all annotations to the image-level container
+        for (const auto& ann_set : annotations) {
+          for (const auto& annotation : ann_set) {
+            if (!annotation.empty()) {
+              imageAnnotationsOrdered["annotations"].push_back(annotation);
+            }
+          }
+        }
       }
 
       // ===== Softmax path (float32, [C, H, W] or [H, W, C]) =====
