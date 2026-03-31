@@ -575,11 +575,11 @@ bool TrtCommon::buildEngineFromOnnx(
     for (std::int32_t i = 0; i < num_input_layers; i++) {
       const auto input = network->getInput(i);
       const auto input_dims = input->getDimensions();
-      const auto B = input_dims.d[0];
+      const auto B = input_dims.d[0];      
       if (B > 0) {
-        // Static first dim: skip setDimensions for this input. Do not overwrite batch_config_ —
-        // other inputs may still be dynamic and need the caller's min/opt/max.
-        continue;
+	// Fixed batch size
+	batch_config_ = {B, B, B};
+	continue;
       }
 
       nvinfer1::Dims min_input_dims{input_dims};

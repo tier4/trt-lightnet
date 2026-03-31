@@ -3468,62 +3468,57 @@ namespace tensorrt_lightnet
       const std::string name = trt_common_->getIOTensorName(i);
       const auto dataType = trt_common_->getBindingDataType(i);
 
-      // ===== Argmax path (int32/int64, [H, W]) =====
+      // ===== Argmax path (int32, [H, W]) =====
       if (contain(name, "argmax")) {
-        const bool is_argmax_i32 = (dataType == nvinfer1::DataType::kINT32);
+	if (dataType != nvinfer1::DataType::kINT32
 #if TRT_VER_NUM >= 10000
-        const bool is_argmax_i64 = (dataType == nvinfer1::DataType::kINT64);
-        if (!is_argmax_i32 && !is_argmax_i64) {
-          continue;
-        }
-#else
-        if (!is_argmax_i32) {
-          continue;
-        }
+            && dataType != nvinfer1::DataType::kINT64
 #endif
-        const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
+            ) {
+	  continue;
+	}
+	const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
 #if TRT_VER_NUM >= 10000
-        const int64_t* argmax64 =
-          is_argmax_i64 ? reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get()) : nullptr;
+	const int64_t* argmax64 = reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get());
 #endif
-        auto read_argmax_id = [&](const int idx) -> int {
+
+	std::vector<std::vector<json::object_t>> annotations(colormap.size());
+
+	for (int c = 1; c < static_cast<int>(colormap.size()); ++c) { // skip background 0
+	  cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
+
+	  // Build binary mask for class c
+	  for (int y = 0; y < outputH; ++y) {
+	    uchar* row = mask.ptr<uchar>(y);
+	    const int base = y * outputW;
+	    for (int x = 0; x < outputW; ++x) {
+	      int id = 0;
 #if TRT_VER_NUM >= 10000
-          if (is_argmax_i64) {
-            return static_cast<int>(argmax64[idx]);
-          }
+	      if (dataType == nvinfer1::DataType::kINT64) {
+		id = static_cast<int>(argmax64[base + x]);
+	      } else
 #endif
-          return argmax32[idx];
-        };
+	      {
+		id = argmax32[base + x];
+	      }
+	      if (id == c) {
+		row[x] = 255;
+	      }
+	    }
+	  }
 
-        std::vector<std::vector<json::object_t>> annotations(colormap.size());
+	  // Extract polygons and append JSON
+	  push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
+	}
 
-        for (int c = 1; c < static_cast<int>(colormap.size()); ++c) {  // skip background 0
-          cv::Mat mask = cv::Mat::zeros(outputH, outputW, CV_8UC1);
-
-          // Build binary mask for class c
-          for (int y = 0; y < outputH; ++y) {
-            uchar* row = mask.ptr<uchar>(y);
-            const int base = y * outputW;
-            for (int x = 0; x < outputW; ++x) {
-              const int id = read_argmax_id(base + x);
-              if (id == c) {
-                row[x] = 255;
-              }
-            }
-          }
-
-          // Extract polygons and append JSON
-          push_annotations_from_mask(mask, c, scaleX, scaleY, annotations);
-        }
-
-        // Append all annotations to the image-level container
-        for (const auto& ann_set : annotations) {
-          for (const auto& annotation : ann_set) {
-            if (!annotation.empty()) {
-              imageAnnotationsOrdered["annotations"].push_back(annotation);
-            }
-          }
-        }
+	// Append all annotations to the image-level container
+	for (const auto& ann_set : annotations) {
+	  for (const auto& annotation : ann_set) {
+	    if (!annotation.empty()) {
+	      imageAnnotationsOrdered["annotations"].push_back(annotation);
+	    }
+	  }
+	}
       }
 
       // ===== Softmax path (float32, [C, H, W] or [H, W, C]) =====
