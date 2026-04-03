@@ -25,3 +25,4 @@ api/
 __pycache__
 .venv
 *.so
+.eggs/
