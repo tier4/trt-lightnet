@@ -1269,6 +1269,7 @@ def blur_sensitive_regions(image, bboxes, label_names, blur_kernel=(21, 21)):
 
     return blurred_image
 
+
 # Function to draw bounding boxes
 def draw_bboxes_on_image(image, bboxes, colormap, names, filled=False):
     for bbox in bboxes:
