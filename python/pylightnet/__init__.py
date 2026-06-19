@@ -589,6 +589,98 @@ class TrtLightnet:
         filtered_results = nms_bboxes(results, iou_thresh=0.45)
         return filtered_results
 
+    def infer_batches_from_bboxes(
+        self,
+        bboxes,
+        image,
+        all_labels,
+        target_labels,
+        subnet_labels,
+        batch_size,
+        min_crop_size,
+        debug=False,
+    ):
+        """Filter, classify, and annotate bounding boxes on the input image."""
+
+        valid_bboxes = []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = bbox["box"]
+            width, height = x2 - x1, y2 - y1
+            if width < min_crop_size or height < min_crop_size:
+                continue
+
+            label_id = bbox["label"]
+            class_name = (
+                all_labels[label_id] if label_id < len(all_labels) else "Unknown"
+            )
+            if class_name in target_labels:
+                valid_bboxes.append(bbox)
+
+        results = []
+
+        for i in range(0, len(valid_bboxes), batch_size):
+            current_batch = valid_bboxes[i : i + batch_size]
+
+            cropped_imgs = [
+                image[int(y1) : int(y2), int(x1) : int(x2)].copy()
+                for x1, y1, x2, y2 in (bbox["box"] for bbox in current_batch)
+            ]
+
+            num = len(cropped_imgs)
+            img_ptrs = (ctypes.POINTER(ctypes.c_ubyte) * num)()
+            heights = (ctypes.c_int * num)()
+            widths = (ctypes.c_int * num)()
+            channels = (ctypes.c_int * num)()
+
+            for idx, img in enumerate(cropped_imgs):
+                img = np.ascontiguousarray(img, dtype=np.uint8)
+                img_ptrs[idx] = img.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+                heights[idx] = img.shape[0]
+                widths[idx] = img.shape[1]
+                channels[idx] = img.shape[2] if img.ndim == 3 else 1
+
+            bbox_ptr = ctypes.POINTER(BBoxInfoC)()
+            bbox_count = ctypes.c_int()
+
+            self.lib.infer_batches(
+                self.instance,
+                img_ptrs,
+                heights,
+                widths,
+                channels,
+                num,
+                ctypes.byref(bbox_ptr),
+                ctypes.byref(bbox_count),
+            )
+
+            for j in range(bbox_count.value):
+                b = bbox_ptr[j]
+                orig_box = current_batch[b.batch_index]["box"]
+                x_offset, y_offset = orig_box[0], orig_box[1]
+
+                result = {
+                    "box": [
+                        b.box.x1 + x_offset,
+                        b.box.y1 + y_offset,
+                        b.box.x2 + x_offset,
+                        b.box.y2 + y_offset,
+                    ],
+                    "label": b.label,
+                    "classId": b.classId,
+                    "prob": b.prob,
+                    "attribute": b.attribute.decode("utf-8", errors="ignore"),
+                    "attribute_prob": b.attribute_prob,
+                }
+                results.append(result)
+
+            # Free memory
+            libc = ctypes.CDLL("libc.so.6")
+            libc.free.argtypes = [ctypes.c_void_p]
+            libc.free(bbox_ptr)
+
+        filtered_results = nms_bboxes(results, iou_thresh=0.45)
+        return filtered_results
+
     def infer_multi_stage(self, image, target_list, cuda=False):
         if image.dtype != np.uint8:
             raise ValueError("Image must be of type np.uint8")
@@ -628,6 +720,50 @@ class TrtLightnet:
 
             bbox["sub_name"] = sub_names[top_index]
             count = count + 1
+
+    def infer_from_bboxes(self, image, bboxes, names, target):
+        count = 0
+        ret = []
+
+        # 外側のループ用変数を書き換えないよう、別名にするか注意
+        # ここでは元のbboxesをベースにループ
+        for parent_bbox in bboxes:
+            x1_offset, y1_offset, x2_offset, y2_offset = parent_bbox["box"]
+            label = parent_bbox["label"]
+            class_name = names[label] if label < len(names) else "Unknown"
+
+            if class_name not in target:
+                continue
+
+            # クロップ処理
+            cropped = image[int(y1_offset) : int(y2_offset), int(x1_offset) : int(x2_offset)].copy()
+            height, width, _ = cropped.shape
+            img_data = cropped.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+
+            # クロップ画像に対して推論
+            self.lib.infer_lightnet_wrapper(
+                self.instance, img_data, width, height, False
+            )
+
+            # クロップ内での検出結果を取得
+            new_bboxes = self.get_bboxes()
+
+            # --- 座標の変換とマージ ---
+            for nb in new_bboxes:
+                nx1, ny1, nx2, ny2 = nb["box"]
+                # 元の画像の座標系に戻す（オフセットを加算）
+                nb["box"] = (
+                    int(nx1 + x1_offset),
+                    int(ny1 + y1_offset),
+                    int(nx2 + x1_offset),
+                    int(ny2 + y1_offset)
+                )
+
+            # リストを結合 (appendではなくextendを使うと平坦にマージされます)
+            ret.extend(new_bboxes)
+            count += 1
+        ret2 = nms_bboxes(ret, iou_thresh=0.45)
+        return ret2
 
     def blur_image(self, image):
         if image.dtype != np.uint8:
@@ -1169,6 +1305,11 @@ def create_lightnet_from_config(config_dict):
             subnet_inference_config,
         )
     else:
+        if "batch_size" in config_dict:
+            batch_size = config_dict["batch_size"]
+            inference_config.max_batch_size = batch_size
+            inference_config.optimal_batch_size = (int)(batch_size / 2)
+            inference_config.min_batch_size = 1
         return TrtLightnet(model_config, inference_config, build_config)
 
 

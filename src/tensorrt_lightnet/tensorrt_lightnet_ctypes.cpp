@@ -916,7 +916,82 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     lightnet->appendSubnetBbox(subnetBbox);
     lightnet->doNonMaximumSuppressionForSubnetBbox();
 }
-  
+
+
+ /**
+ * @brief Perform batch inference on a subset of bounding boxes detected by the main network using a subnet.
+ *
+ * @param lightnet Pointer to the main TrtLightnet instance.
+ * @param subnet Pointer to the subnet TrtLightnet instance.
+ * @param image Input image.
+ * @param width Width of the image.
+ * @param height Height of the image.
+ * @param cuda Flag indicating whether to use CUDA.
+ * @param target Array of target class names.
+ * @param count Number of target classes.
+ */
+  void infer_batch_from_bboxes(std::vector<tensorrt_lightnet::BBoxInfo> &bbox,  std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet, cv::Mat &image, int width, int height, bool cuda, char** target, std::vector<std::string> &names, int count) {
+    std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
+    std::vector<cv::Mat> cropped;
+    int num = static_cast<int>(bbox.size());
+    int maxBatchSize = subnet->getBatchSize();
+    for (int bs = 0; bs < num; bs++) {
+        auto b = bbox[bs];
+        bool flg = false;
+        for (int t = 0; t < count; t++) {
+            if (std::string(target[t]) == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+
+        if (!flg) continue;
+
+        cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
+        cropped.push_back(image(roi));
+	if (static_cast<int>(cropped.size()) > maxBatchSize) {
+	  break;
+	}
+    }
+
+    if (!cropped.size()) {
+      return;
+    }
+
+    subnet->preprocess(cropped);
+    subnet->doInference(static_cast<int>(cropped.size()));
+
+    int actual_batch_size = 0;
+    for (int bs = 0; bs < num; bs++) {
+        auto b = bbox[bs];
+        bool flg = false;
+
+        for (int t = 0; t < count; t++) {
+            if (std::string(target[t]) == names[b.classId]) {
+                flg = true;
+                break;
+            }
+        }
+
+        if (!flg) continue;
+
+        auto bb = subnet->getBbox(cropped[actual_batch_size].rows, cropped[actual_batch_size].cols, actual_batch_size);
+        for (auto &box : bb) {
+            box.box.x1 += b.box.x1;
+            box.box.y1 += b.box.y1;
+            box.box.x2 += b.box.x1;
+            box.box.y2 += b.box.y1;
+        }
+        subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
+        actual_batch_size++;
+	if (static_cast<int>(actual_batch_size) >= maxBatchSize) {
+	  break;
+	}
+    }
+    subnet->appendSubnetBbox(subnetBbox);
+    subnet->doNonMaximumSuppressionForSubnetBbox();
+  }
+
 
   /**
    * @brief Perform inference with the TrtLightnet model.

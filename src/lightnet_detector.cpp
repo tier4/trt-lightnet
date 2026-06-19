@@ -1102,9 +1102,14 @@ main(int argc, char* argv[])
     .calibration_images = get_calibration_images(),
     .calibration_type = get_calib_type(),    
     //.batch_config = {1, get_batch_size()/2, get_batch_size()},
-    .batch_config = {1, 1, 1},    
+    .batch_config = {1, 1, 1},
     .workspace_size = (1 << 30)
   };
+
+  int batch_size = get_batch_size();
+  if (get_subnet_onnx_path() == "not-specified" && batch_size > 1) {
+      inference_config.batch_config = {1, batch_size, batch_size};
+  }
   
   PathConfig path_config = {
     .t4dataset_directory = get_t4_dataset_directory_path(),

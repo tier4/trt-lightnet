@@ -310,7 +310,6 @@ namespace tensorrt_lightnet
     batch_size_ = batch_config[2];
     multitask_ = 0;
 
-    
     if (precision == "int8") {
       if (build_config.clip_value <= 0.0 && calibration_image_list_path.empty()) {
 	throw std::runtime_error(
