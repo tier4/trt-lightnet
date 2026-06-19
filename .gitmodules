@@ -1,3 +1,4 @@
 [submodule "packages/cnpy"]
 	path = packages/cnpy
-	url = https://github.com/rogersce/cnpy.git
+  url = https://github.com/rogersce/cnpy.git
+  ignore = untracked

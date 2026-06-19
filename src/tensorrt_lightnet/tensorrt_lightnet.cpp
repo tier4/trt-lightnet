@@ -52,6 +52,7 @@ SOFTWARE.
 #include <string>
 #include <vector>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <filesystem> // Use standardized filesystem library
@@ -96,6 +97,32 @@ std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
   // 🔄 CHAIN_APPROX_SIMPLE を使用してデータ量削減
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   return contours;
+}
+
+static bool should_log_polygon_stats()
+{
+  const char * env = std::getenv("COMET_DEBUG_POLYGON_STATS");
+  if (env == nullptr || env[0] == '\0') {
+    return false;
+  }
+  const std::string v(env);
+  return v == "1" || v == "true" || v == "TRUE" || v == "yes" || v == "YES";
+}
+
+inline std::size_t get_dtype_size_bytes(nvinfer1::DataType dt)
+{
+  switch (dt) {
+    case nvinfer1::DataType::kFLOAT: return 4;
+    case nvinfer1::DataType::kHALF: return 2;
+    case nvinfer1::DataType::kINT8: return 1;
+    case nvinfer1::DataType::kINT32: return 4;
+#if TRT_VER_NUM >= 10000
+    case nvinfer1::DataType::kINT64: return 8;
+    case nvinfer1::DataType::kUINT8: return 1;
+    case nvinfer1::DataType::kBOOL: return 1;
+#endif
+    default: return 4;
+  }
 }
 
 void write_json_with_order(const json& j, const std::string& filename) {
@@ -453,14 +480,19 @@ namespace tensorrt_lightnet
       }
       std::cout << name << " => " << dims.d[0] << "x" << dims.d[1] << "x" << dims.d[2] << "x" << dims.d[3] << " (" << trt_common_->dataType2String(dataType)  << ")" << std::endl;
 
-      // Calculate the tensor volume.
+      // Calculate tensor bytes based on binding datatype.
       const auto volume = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
+      const std::size_t bytes =
+        static_cast<std::size_t>(batch_size_) *
+        static_cast<std::size_t>(volume) *
+        get_dtype_size_bytes(dataType);
+      const std::size_t float_slots = (bytes + sizeof(float) - 1) / sizeof(float);
 
       if (i == 0) { // Input tensor
 	input_d_ = cuda_utils::make_unique<float[]>(batch_size_ * volume);
       } else { // Output tensors
-	output_d_.push_back(cuda_utils::make_unique<float[]>(batch_size_ * volume));
-	output_h_.push_back(cuda_utils::make_unique_host<float[]>(batch_size_ * volume, cudaHostAllocPortable));
+	output_d_.push_back(cuda_utils::make_unique<float[]>(float_slots));
+	output_h_.push_back(cuda_utils::make_unique_host<float[]>(float_slots, cudaHostAllocPortable));
       }
     }
   }
@@ -614,7 +646,15 @@ namespace tensorrt_lightnet
     for (int i = 1; i < trt_common_->getNbBindings(); i++) {
       const auto dims = trt_common_->getBindingDimensions(i);
       const auto output_size = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
-      CHECK_CUDA_ERROR(cudaMemcpyAsync(output_h_.at(i-1).get(), output_d_.at(i-1).get(), sizeof(float) * output_size, cudaMemcpyDeviceToHost, *stream_));
+      const auto dataType = trt_common_->getBindingDataType(i);
+      const std::size_t bytes =
+        static_cast<std::size_t>(output_size) * get_dtype_size_bytes(dataType);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(
+        output_h_.at(i-1).get(),
+        output_d_.at(i-1).get(),
+        bytes,
+        cudaMemcpyDeviceToHost,
+        *stream_));
     }
     cudaStreamSynchronize(*stream_);
     return true;
@@ -651,7 +691,15 @@ namespace tensorrt_lightnet
       dims.d[0] = batchSize;
       auto output_size = std::accumulate(dims.d + 1, dims.d + dims.nbDims, 1, std::multiplies<int>());
       output_size *= batchSize;
-      CHECK_CUDA_ERROR(cudaMemcpyAsync(output_h_.at(i-1).get(), output_d_.at(i-1).get(), sizeof(float) * output_size, cudaMemcpyDeviceToHost, *stream_));
+      const auto dataType = trt_common_->getBindingDataType(i);
+      const std::size_t bytes =
+        static_cast<std::size_t>(output_size) * get_dtype_size_bytes(dataType);
+      CHECK_CUDA_ERROR(cudaMemcpyAsync(
+        output_h_.at(i-1).get(),
+        output_d_.at(i-1).get(),
+        bytes,
+        cudaMemcpyDeviceToHost,
+        *stream_));
     }
     cudaStreamSynchronize(*stream_);
     return true;
@@ -3352,6 +3400,23 @@ namespace tensorrt_lightnet
     // Channel size for detection head; used to skip non-segmentation outputs
     const int chan_size = (4 + 1 + num_class_) * num_anchor_;
 
+    struct PolygonStats {
+      int total_ann = 0;
+      int total_contours = 0;
+      int total_points = 0;
+      std::vector<int> ann_by_class;
+      std::vector<int> contours_by_class;
+      std::vector<int> points_by_class;
+    };
+    PolygonStats stats_storage;
+    PolygonStats * poly_stats = nullptr;
+    if (should_log_polygon_stats()) {
+      stats_storage.ann_by_class.assign(colormap.size(), 0);
+      stats_storage.contours_by_class.assign(colormap.size(), 0);
+      stats_storage.points_by_class.assign(colormap.size(), 0);
+      poly_stats = &stats_storage;
+    }
+
     /**
      * @brief Convert a binary mask to polygons and append to annotation list for class c.
      *
@@ -3367,6 +3432,19 @@ namespace tensorrt_lightnet
     {
       // Find polygons from the binary mask
       std::vector<std::vector<cv::Point>> contours = get_polygons(mask_bin);
+
+      if (poly_stats != nullptr) {
+	const int n = static_cast<int>(contours.size());
+	poly_stats->total_ann += n;
+	poly_stats->total_contours += n;
+	poly_stats->ann_by_class[c] += n;
+	poly_stats->contours_by_class[c] += n;
+	for (const auto& ct : contours) {
+	  const int psz = static_cast<int>(ct.size());
+	  poly_stats->total_points += psz;
+	  poly_stats->points_by_class[c] += psz;
+	}
+      }
 
       std::vector<json::object_t> thread_annotations;
       thread_annotations.reserve(contours.size());
@@ -3428,10 +3506,21 @@ namespace tensorrt_lightnet
       }
 
       const std::string name = trt_common_->getIOTensorName(i);
+      const auto dataType = trt_common_->getBindingDataType(i);
 
       // ===== Argmax path (int32, [H, W]) =====
       if (contain(name, "argmax")) {
-	const int* argmax = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
+	if (dataType != nvinfer1::DataType::kINT32
+#if TRT_VER_NUM >= 10000
+            && dataType != nvinfer1::DataType::kINT64
+#endif
+            ) {
+	  continue;
+	}
+	const int* argmax32 = reinterpret_cast<const int*>(output_h_.at(i - 1).get());
+#if TRT_VER_NUM >= 10000
+	const int64_t* argmax64 = reinterpret_cast<const int64_t*>(output_h_.at(i - 1).get());
+#endif
 
 	std::vector<std::vector<json::object_t>> annotations(colormap.size());
 
@@ -3443,7 +3532,15 @@ namespace tensorrt_lightnet
 	    uchar* row = mask.ptr<uchar>(y);
 	    const int base = y * outputW;
 	    for (int x = 0; x < outputW; ++x) {
-	      const int id = argmax[base + x];
+	      int id = 0;
+#if TRT_VER_NUM >= 10000
+	      if (dataType == nvinfer1::DataType::kINT64) {
+		id = static_cast<int>(argmax64[base + x]);
+	      } else
+#endif
+	      {
+		id = argmax32[base + x];
+	      }
 	      if (id == c) {
 		row[x] = 255;
 	      }
@@ -3531,6 +3628,22 @@ namespace tensorrt_lightnet
 	    }
 	  }
 	}
+      }
+    }
+
+    if (poly_stats != nullptr && poly_stats->total_ann > 0) {
+      std::cout << "[polygon-stats] " << image_name
+		<< " total_annotations=" << poly_stats->total_ann
+		<< " total_contours=" << poly_stats->total_contours
+		<< " total_points=" << poly_stats->total_points << std::endl;
+      for (size_t c = 1; c < colormap.size(); ++c) {
+	if (poly_stats->ann_by_class[c] == 0) {
+	  continue;
+	}
+	std::cout << "[polygon-stats]   class=" << colormap[c].name
+		  << " annotations=" << poly_stats->ann_by_class[c]
+		  << " contours=" << poly_stats->contours_by_class[c]
+		  << " points=" << poly_stats->points_by_class[c] << std::endl;
       }
     }
 
