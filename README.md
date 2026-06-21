@@ -1,221 +1,479 @@
-# TensorRT-LightNet: High-Efficiency and Real-Time CNN Implementation on Edge AI
+# TensorRT-LightNet: High-Efficiency Real-Time CNN for Edge AI
 
-trt-lightNet is a CNN implementation optimized for edge AI devices that combines the advantages of LightNet <sup>[[1]](#references)</sup> and TensorRT <sup>[[2]](#references)</sup>. LightNet is a lightweight and high-performance neural network framework designed for edge devices, while TensorRT is a high-performance deep learning inference engine developed by NVIDIA for optimizing and running deep learning models on GPUs. trt-lightnet uses the Network Definition API provided by TensorRT to integrate LightNet into TensorRT, allowing it to run efficiently and in real-time on edge devices.
-This is a reproduction of trt-lightnet <sup>[[6]](#references)</sup>, which generates a TensorRT engine from the ONNX format.
+**trt-lightnet** is a TensorRT-based CNN inference framework optimized for edge AI devices (Jetson Xavier, Orin, etc.). It combines [LightNet](https://github.com/daniel89710/lightNet) — a lightweight neural network architecture for edge devices — with NVIDIA TensorRT to deliver real-time object detection, semantic segmentation, and depth estimation in a single multitask pipeline.
 
-## Key Improvements
+## Table of Contents
 
-### 2:4 Structured Sparsity
+- [Key Features](#key-features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [Local Build](#local-build)
+  - [Docker Build](#docker-build)
+- [Quick Start](#quick-start)
+- [Configuration Files](#configuration-files)
+- [Command-Line Reference](#command-line-reference)
+- [Python API (pylightnet)](#python-api-pylightnet)
+- [Advanced Features](#advanced-features)
+- [Project Structure](#project-structure)
+- [References](#references)
 
-trt-lightnet utilizes 2:4 structured sparsity <sup>[[3]](#references)</sup>  to further optimize the network. 2:4 structured sparsity means that two values must be zero in each contiguous block of four values, resulting in a 50% reduction in the number of weights. This technique allows the network to use fewer weights and computations while maintaining accuracy.
+---
 
-![Sparsity](https://developer-blogs.nvidia.com/ja-jp/wp-content/uploads/sites/6/2022/06/2-4-structured-sparse-matrix.png "sparsity")
+## Key Features
 
-### NVDLA Execution
+| Feature | Description |
+|---|---|
+| **Multitask Inference** | Object detection + semantic segmentation + depth estimation in one pass |
+| **Multi-Precision** | FP32 / FP16 / INT8 quantization with per-layer precision control |
+| **2:4 Structured Sparsity** | 50% weight reduction with maintained accuracy on Ampere+ GPUs |
+| **NVDLA Support** | Offload inference to the Deep Learning Accelerator on Xavier/Orin |
+| **Hierarchical Detection** | Two-stage subnet for fine-grained classification (e.g. traffic light color) |
+| **Uncertainty Estimation** | Entropy-based confidence maps from softmax outputs |
+| **BEV Generation** | Bird's Eye View projection from monocular depth maps |
+| **Range Image Segmentation** | LiDAR point cloud → range image → semantic segmentation pipeline |
+| **Python Bindings** | ctypes-based `pylightnet` package for scripting and integration |
 
-trt-lightnet also supports the execution of the neural network on the NVIDIA Deep Learning Accelerator (NVDLA) <sup>[[4]](#references)</sup> , a free and open architecture that provides high performance and low power consumption for deep learning inference on edge devices. By using NVDLA, trt-lightnet can further improve the efficiency and performance of the network on edge devices.
+---
 
-![NVDLA](https://i0.wp.com/techgrabyte.com/wp-content/uploads/2019/09/Nvidia-Open-Source-Its-Deep-Learning-Inference-Compiler-NVDLA-2.png?w=768&ssl=1 "NVDLA")
+## Requirements
 
+### Local Build
 
-### Multi-Precision Quantization
+| Dependency | Version |
+|---|---|
+| CUDA | 11.0 or later |
+| TensorRT | 8.5 or 8.6 |
+| CMake | 3.10+ |
+| GCC | ≤ 11.x |
 
-In addition to post training quantization <sup>[[5]](#references)</sup>, trt-lightnet also supports multi-precision quantization, which allows the network to use different precision for weights and activations. By using mixed precision, trt-lightnet can further reduce the memory usage and computational requirements of the network while still maintaining accuracy. By writing it in CFG, you can set the precision for each layer of your CNN.
-
-![Quantization](https://developer-blogs.nvidia.com/wp-content/uploads/2021/07/qat-training-precision.png "Quantization")
-
-
-
-### Multitask Execution (Detection/Segmentation)
-
-trt-lightnet also supports multitask execution, allowing the network to perform both object detection and segmentation tasks simultaneously. This enables the network to perform multiple tasks efficiently on edge devices, saving computational resources and power.
-
-
-## Installation
-
-### Requirements
-
-#### For Local Installation
-
--   CUDA 11.0 or later
--   TensorRT 8.5 or 8.6
--   cnpy for debug of tensors
-This repository has been tested with the following environments:
+**Tested environments:**
 
 - CUDA 11.7 + TensorRT 8.5.2 on Ubuntu 22.04
 - CUDA 12.2 + TensorRT 8.6.0 on Ubuntu 22.04
-- CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack5.1
+- CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack 5.1
 - CUDA 11.8 + TensorRT 8.6.1 on Ubuntu 22.04
-- gcc <= 11.x
 
-#### For Docker Installation
+### Docker Build
 
--  Docker
--  NVIDIA Container Toolkit
+- Docker 24.0+
+- NVIDIA Container Toolkit 1.14+
 
-This repository has been tested with the following environments:
+---
 
-- Docker 24.0.7 + NVIDIA Container Toolkit 1.14.3 on Ubuntu 20.04
+## Installation
 
-### Steps for Local Installation
+### Local Build
 
-1.  Clone the repository, and the dependent packages
+1. Clone the repository with submodules:
 
-```shell
-$ git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
-$ cd trt-lightnet
+```bash
+git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
+cd trt-lightnet
 ```
 
-2.  Install libraries.
+2. Install system dependencies:
 
-```shell
-$ sudo apt update
-$ sudo apt install libgflags-dev
-$ sudo apt install libboost-all-dev
-$ sudo apt install libopencv-dev
-$ sudo apt install libeigen3-dev
-$ sudo apt install nlohmann-json3-dev
-$ sudo apt install libssl-dev
+```bash
+sudo apt update
+sudo apt install -y \
+    libgflags-dev \
+    libboost-all-dev \
+    libopencv-dev \
+    libeigen3-dev \
+    nlohmann-json3-dev \
+    libssl-dev
 ```
 
+3. Build and install:
 
-3.  Compile the TensorRT implementation.
-
-```shell
-$ mkdir build && cd build
-$ cmake ../
-$ make -j
-$ sudo make install
+```bash
+mkdir build && cd build
+cmake ../
+make -j$(nproc)
+sudo make install
 ```
 
-### Steps for Docker Installation
+The `cnpy` library (for NumPy-format tensor debugging) is fetched automatically by CMake if not found.
 
-1.  Clone the repository.
+### Docker Build
 
-```shell
-$ git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
-$ cd trt-lightnet
+```bash
+# Clone
+git clone --recurse-submodules git@github.com:tier4/trt-lightnet.git
+cd trt-lightnet
+
+# Build image (choose your architecture)
+docker build -f Dockerfile_x86     -t trt-lightnet:latest .   # x86_64
+docker build -f Dockerfile_aarch64 -t trt-lightnet:latest .   # Jetson (aarch64)
+
+# Run container
+docker run -it --gpus all          trt-lightnet:latest   # x86_64
+docker run -it --runtime=nvidia    trt-lightnet:latest   # Jetson
 ```
 
-2.  Build the docker image.
+---
 
-```shell
-# For x86
-$ docker build -f Dockerfile_x86 -t trt-lightnet:latest .
-# For aarch64
-$ docker build -f Dockerfile_aarch64 -t trt-lightnet:latest .
+## Quick Start
+
+### 1. Build a TensorRT Engine
+
+An ONNX model must be converted to a TensorRT engine before inference. The engine is cached to disk and reused on subsequent runs.
+
+```bash
+cd build
+
+# FP32 (highest accuracy, largest model)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp32
+
+# FP16 (recommended for most edge deployments)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16
+
+# INT8 (smallest/fastest; requires calibration image list)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision int8 --first true
+
+# DLA engine on Xavier / Orin (INT8 only)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision int8 --first true --dla 0
 ```
 
-3. Run the docker container.
+> **Note:** `--first true` skips INT8 quantization on the first layer, which is highly sensitive and can cause accuracy loss if quantized.
 
-```shell
-# For x86
-$ docker run -it --gpus all trt-lightnet:latest
-# For aarch64
-$ docker run -it --runtime=nvidia trt-lightnet:latest
+### 2. Run Inference
+
+```bash
+# From an image directory (press Space to advance, q to quit)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 --d /path/to/images
+
+# From a video file
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 --v /path/to/video.mp4
+
+# Save detection results to disk
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 \
+    --d /path/to/images \
+    --save-detections true \
+    --save-detections-path /path/to/output
 ```
 
-## Model
- T.B.D
+---
 
-## Usage
+## Configuration Files
 
-### Converting a LightNet model to a TensorRT engine
+trt-lightnet uses [gflags](https://github.com/gflags/gflags)-style config files (plain text, one flag per line). Command-line flags override values in the config file.
 
-Build FP32 engine
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision fp32
+### Minimal example (detection only)
+
+```ini
+--onnx=/path/to/model.onnx
+--names=/path/to/classes.names
+--rgb=/path/to/colormap.colormap
+--precision=fp16
+--anchors=8,9,36,11,15,28,40,36,29,72,104,24,86,67,58,140,265,70
+--num_anchors=3
+--c=10
+--thresh=0.2
+--nms_thresh=0.6
+--cuda=true
 ```
 
-Build FP16(HALF) engine
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision fp16
+### Multi-task example (detection + segmentation + depth)
+
+```ini
+--onnx=/path/to/multitask.onnx
+--names=/path/to/classes.names
+--rgb=/path/to/detect.colormap
+--precision=fp16
+--anchors=8,9,36,11,15,28
+--num_anchors=3
+--c=8
+--thresh=0.2
+--nms_thresh=0.6
+--cuda=true
+
+# Semantic segmentation
+--mask=/path/to/segmentation.csv
+
+# Depth + Bird's Eye View
+--fx=1000.0
+--fy=1000.0
+--max_distance=80.0
 ```
 
-Build INT8 engine  
-(You need to prepare a list for calibration in "configs/calibration_images.txt".)
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision int8 --first true
+### Two-stage detection (main model + subnet)
+
+```ini
+# Main detection model
+--onnx=/path/to/main.onnx
+--names=/path/to/main.names
+--rgb=/path/to/main.colormap
+--precision=fp16
+--anchors=...
+--num_anchors=5
+--c=10
+--thresh=0.2
+
+# Subnet for fine-grained classification (e.g. traffic lights)
+--subnet_onnx=/path/to/subnet.onnx
+--subnet_names=/path/to/subnet.names
+--subnet_rgb=/path/to/subnet.colormap
+--subnet_anchors=7,7,14,14,42,42
+--subnet_num_anchors=3
+--subnet_c=6
+--target_names=/path/to/trigger_classes.names   # classes that activate the subnet
+--subnet_thresh=0.2
+--batch_size=64
 ```
-First layer is much more sensitive for quantization.
-Threfore, the first layer is not quanitzed using "--first true"
 
-Build DLA engine (Supported by only Xavier and Orin)
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision int8 --first true --dla [0/1]
+### Data file formats
+
+| File | Format | Description |
+|---|---|---|
+| `.names` | One class name per line | Detection class labels |
+| `.colormap` | `R,G,B` per line | Per-class visualization colors |
+| `.csv` | `id,name,r,g,b,is_dynamic` | Segmentation class metadata |
+| `calibration_images.txt` | One image path per line | Images used for INT8 calibration |
+
+### INT8 calibration
+
+Prepare a text file listing calibration images (50–500 images representative of the deployment data):
+
+```
+/data/calib/frame_000.jpg
+/data/calib/frame_001.jpg
+...
 ```
 
-### Inference with the TensorRT engine
+Then reference it in the config:
 
-Inference from images
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision [fp32/fp16/int8] --first true {--dla [0/1]} --d DIRECTORY
+```ini
+--calibration_images=/path/to/calibration_images.txt
+--calib=Entropy   # Entropy | MinMax | Legacy | Percentile
 ```
 
-Inference from video
-```shell
-$ ./trt-lightnet --flagfile ../configs/CONFIGS.txt --precision [fp32/fp16/int8] --first true {--dla [0/1]} --v VIDEO
+---
+
+## Command-Line Reference
+
+All flags can be set in a config file (`--flagfile`) or passed directly on the command line. The full list is in `src/config_parser.cpp`.
+
+### Core flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--flagfile` | string | **(Required)** Path to the config file |
+| `--precision` | string | Engine precision: `fp32`, `fp16`, `int8` |
+| `--onnx` | string | Path to the ONNX model |
+| `--names` | string | Class names file |
+| `--rgb` | string | Colormap file for visualization |
+| `--c` | int | Number of detection classes |
+| `--thresh` | float | Detection confidence threshold |
+| `--nms_thresh` | float | NMS IoU threshold |
+| `--anchors` | int list | Anchor box dimensions (flat list) |
+| `--num_anchors` | int | Number of anchors per scale |
+
+### Engine build flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--first` | bool | Skip INT8 quantization on the first layer |
+| `--last` | bool | Skip INT8 quantization on the last layer |
+| `--sparse` | bool | Enable 2:4 structured sparsity |
+| `--dla` | int | DLA core index (0 or 1; Xavier/Orin only) |
+| `--calib` | string | INT8 calibration algorithm |
+| `--calibration_images` | string | Calibration image list file |
+
+### Inference flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--d` | string | Directory of images to process |
+| `--v` | string | Video file to process |
+| `--save-detections` | bool | Save detection output images |
+| `--save-detections-path` | string | Output directory for saved results |
+| `--profile` | bool | Print per-layer latency profile |
+| `--debug_tensors` | string | Comma-separated tensor names to dump |
+
+### Segmentation / depth flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--mask` | string | Segmentation CSV file |
+| `--entropy` | bool | Compute and display entropy maps |
+| `--fx`, `--fy` | float | Camera focal lengths (for BEV projection) |
+| `--max_distance` | float | Maximum depth range (meters) |
+| `--smooth` | bool | Road-guided depth smoothing |
+
+### LiDAR range image flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--lidar` | bool | Enable range image processing mode |
+| `--camera_name` | string | Camera sensor identifier |
+
+---
+
+## Python API (pylightnet)
+
+`pylightnet` is a ctypes-based Python wrapper around the shared library built by trt-lightnet.
+
+### Installation
+
+```bash
+cd python
+pip install setuptools==68.2.2
+pip install .
 ```
 
-## Most commonly used arguments and options
-Here shows a part of most commonly used options for `trt-lightnet`. For more flags implemented, please refer to `src/config_parser.cpp`
+### Demo scripts
 
-- `--flagfile <path>` (required):
-  - The path to the config file, which contains some basic operations (e.g. onnx, thresh)
-  - Note that the options in the config file can be overwritten from command line.
-  - Example: `../configs/CONFIGS.txt`
+```bash
+# Detection + segmentation from a video
+python scripts/demo.py \
+    --flagfile /path/to/config.txt \
+    --video    /path/to/video.mp4
 
-- `--precision <level>` (required):
-  - Specified the quantization level during building the inference engine. Available options are:
-    - `fp32`: Full precision inference engine
-    - `fp16`: Half precision inference engine
-    - `int8`: int8 precision inference engine
-  - Note that, if `int8` is picked, it requires `calibration_images.txt` in `configs/` directory.
-  - Example: `int8`
+# LiDAR range image segmentation from a T4 dataset
+python scripts/range_image_demo.py \
+    --t4dataset  /path/to/t4dataset \
+    --camera-name CAM_FRONT_WIDE \
+    --flagfile   /path/to/config.txt \
+    --save-segmentation \
+    --save-uncertainty \
+    --output-dir ./output
+```
 
-- `--first` (optional):
-  - A boolean flag to choose if applying quantization to first layer or not.
-    - Example: `true`
-  - In general, the first layer is a sensitive layer, where the quantization may leads to precision  drop. So set `--first` as `true` to skip the quantization is recommended.
+### API usage
 
+```python
+import pylightnet
 
-- `--d <path>` (optional):
-  - The path to the directory of images
-  - Example: `../sample_data/images`
-  - During the inference, user can press `space` to jump to next image to infer.
-  
-- `--v <path>` (optional):
-  - The path to the video file
-  - Example: `../sample_data/sample.mp4`
+# Load config and create engine
+config = pylightnet.load_config("/path/to/config.txt")
+names   = pylightnet.load_names_from_file(config["names"])
+colormap = pylightnet.load_colormap_from_file(config["rgb"])
 
-- `--save-detections` (optional):
-  - A boolean flag to choose if save the detections result or not.
-  - Example: `true`
+lightnet = pylightnet.create_lightnet_from_config(config)
 
-- `--save-detections-path` (optional):
-  - The flag to determinate the output directory if `--save-detections` is set `true`
-  - Example: `../workspace/detections_result`
+# Run inference on a BGR image (numpy array)
+lightnet.infer(frame, cuda=True)
 
+# Retrieve detection results
+bboxes = lightnet.get_bboxes()
+pylightnet.draw_bboxes_on_image(frame, bboxes, colormap, names)
 
-## Implementation
+# Retrieve segmentation mask
+seg_data = pylightnet.load_segmentation_data(config["mask"])
+argmax2bgr = lightnet.segmentation_to_argmax2bgr(seg_data)
+lightnet.make_mask(argmax2bgr)
+masks = lightnet.get_masks_from_cpp()
 
-trt-lightnet is built on the LightNet framework and integrates with TensorRT using the Network Definition API. The implementation is based on the following repositories:
+# Uncertainty / entropy
+lightnet.make_entropy()
+entropy_maps = lightnet.get_entropy_maps_from_cpp()
 
--   LightNet: [https://github.com/daniel89710/lightNet](https://github.com/daniel89710/lightNet)
--   TensorRT: [https://github.com/NVIDIA/TensorRT](https://github.com/NVIDIA/TensorRT)
--   NVIDIA DeepStream SDK: [https://github.com/NVIDIA-AI-IOT/deepstream\_reference\_apps/tree/restructure](https://github.com/NVIDIA-AI-IOT/deepstream_reference_apps/tree/restructure)
--   YOLO-TensorRT: [https://github.com/enazoe/yolo-tensorrt](https://github.com/enazoe/yolo-tensorrt)
--   trt-yoloXP: [https://github.com/tier4/trt-yoloXP]
+# Cleanup
+lightnet.destroy()
+```
 
-## Conclusion
+### Docker test
 
-trt-lightnet is a powerful and efficient implementation of CNNs using Edge AI. With its advanced features and integration with TensorRT, it is an excellent choice for real-time object detection and semantic segmentation applications on edge devices.
+```bash
+# Build and run the pylightnet test inside Docker
+make test-pylightnet
+```
 
-# References
-[1]. [LightNet](https://github.com/daniel89710/lightNet)  
-[2]. [TensorRT](https://developer.nvidia.com/tensorrt)  
-[3]. [Accelerating Inference with Sparsity Using the NVIDIA Ampere Architecture and NVIDIA TensorRT](https://developer.nvidia.com/blog/accelerating-inference-with-sparsity-using-ampere-and-tensorrt/)  
-[4]. [NVDLA](http://nvdla.org/)  
-[5]. [Achieving FP32 Accuracy for INT8 Inference Using Quantization Aware Training with NVIDIA TensorRT](https://developer.nvidia.com/blog/achieving-fp32-accuracy-for-int8-inference-using-quantization-aware-training-with-tensorrt/)  
-[6]. [lightNet-TR](https://github.com/daniel89710/trt-lightnet)
+---
 
+## Advanced Features
+
+### Uncertainty Estimation
+
+When `--entropy` is set, trt-lightnet computes per-class entropy from the softmax segmentation output. High entropy indicates low model confidence and is useful for out-of-distribution detection.
+
+```bash
+./trt-lightnet --flagfile config.txt --precision fp16 --d images/ --entropy
+```
+
+### Bird's Eye View (BEV) Projection
+
+With camera intrinsics (`--fx`, `--fy`) and a depth output head, trt-lightnet can back-project the depth map into a top-down occupancy grid. Combine with `--smooth` to use road-plane segmentation for improved flatness correction.
+
+### Two-Stage Hierarchical Detection
+
+A primary model detects coarse categories; for any detected instance belonging to a `--target_names` class, a secondary subnet (`--subnet_onnx`) classifies the crop at higher resolution (e.g. red/amber/green/arrow for traffic lights). Batch inference over all crops is controlled by `--batch_size`.
+
+### LiDAR Range Image Segmentation
+
+Point cloud files (binary `.bin` format from Seyond or compatible LiDAR) can be converted on-the-fly to range images and passed through a segmentation network:
+
+```bash
+./trt-lightnet --flagfile configs/CoMLOps-Large-RangeImage-Segmenation-Model.txt \
+    --precision fp16 --lidar --camera_name CAM_FRONT_WIDE
+```
+
+### Per-Layer Profiling
+
+```bash
+./trt-lightnet --flagfile config.txt --precision fp16 --d images/ --profile
+```
+
+Prints a table of per-layer latency to help identify bottlenecks.
+
+---
+
+## Project Structure
+
+```
+trt-lightnet/
+├── CMakeLists.txt              # Build configuration
+├── Dockerfile_x86              # Docker image for x86_64
+├── Dockerfile_aarch64          # Docker image for Jetson
+├── configs/                    # Example config files (.txt) and precision tables (.json)
+├── data/                       # Colormaps, class name files, segmentation CSVs
+├── include/
+│   ├── tensorrt_lightnet/      # Main inference engine headers
+│   ├── tensorrt_common/        # TensorRT wrapper
+│   ├── cuda_utils/             # CUDA memory helpers
+│   ├── sensor/                 # Sensor calibration parsing
+│   ├── pcdUtils/               # Point cloud utilities
+│   └── fswp/                   # Free-space detection
+├── src/
+│   ├── lightnet_detector.cpp   # Main executable entry point
+│   ├── tensorrt_lightnet/      # Inference engine implementation
+│   ├── tensorrt_common/        # TensorRT engine build/load
+│   ├── preprocess.cu           # GPU preprocessing CUDA kernels
+│   ├── config_parser.cpp       # gflags config parsing
+│   ├── sensor/                 # Sensor config parsers
+│   ├── pcdUtils/               # LiDAR → range image conversion
+│   └── fswp/                   # Free-space polygon extraction
+├── python/
+│   ├── setup.py                # Python package build
+│   ├── _pylightnet.py          # ctypes wrapper internals
+│   └── scripts/
+│       ├── demo.py             # Camera/video demo
+│       ├── range_image_demo.py # LiDAR T4 dataset demo
+│       ├── anonymizer.py       # Privacy blurring script
+│       └── ensemble_anonymizer.py
+└── packages/                   # Auto-fetched external deps (cnpy)
+```
+
+---
+
+## Implementation References
+
+- [LightNet](https://github.com/daniel89710/lightNet) — base CNN architecture
+- [TensorRT](https://github.com/NVIDIA/TensorRT) — inference optimizer
+- [NVIDIA DeepStream SDK](https://github.com/NVIDIA-AI-IOT/deepstream_reference_apps)
+- [yolo-tensorrt](https://github.com/enazoe/yolo-tensorrt) — YOLO-TRT patterns
+- [trt-yoloXP](https://github.com/tier4/trt-yoloXP) — TIER IV predecessor
+
+## References
+
+[1] [LightNet](https://github.com/daniel89710/lightNet)  
+[2] [TensorRT](https://developer.nvidia.com/tensorrt)  
+[3] [Accelerating Inference with Sparsity Using the NVIDIA Ampere Architecture and NVIDIA TensorRT](https://developer.nvidia.com/blog/accelerating-inference-with-sparsity-using-ampere-and-tensorrt/)  
+[4] [NVDLA](http://nvdla.org/)  
+[5] [Achieving FP32 Accuracy for INT8 Inference Using Quantization Aware Training with NVIDIA TensorRT](https://developer.nvidia.com/blog/achieving-fp32-accuracy-for-int8-inference-using-quantization-aware-training-with-tensorrt/)  
+[6] [lightNet-TR (original)](https://github.com/daniel89710/trt-lightnet)
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
