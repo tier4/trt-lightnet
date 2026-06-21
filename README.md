@@ -14,6 +14,7 @@
 - [Command-Line Reference](#command-line-reference)
 - [Python API (pylightnet)](#python-api-pylightnet)
 - [Advanced Features](#advanced-features)
+- [Tips](#tips)
 - [Project Structure](#project-structure)
 - [References](#references)
 
@@ -285,12 +286,19 @@ All flags can be set in a config file (`--flagfile`) or passed directly on the c
 
 | Flag | Type | Description |
 |---|---|---|
-| `--first` | bool | Skip INT8 quantization on the first layer |
-| `--last` | bool | Skip INT8 quantization on the last layer |
-| `--sparse` | bool | Enable 2:4 structured sparsity |
-| `--dla` | int | DLA core index (0 or 1; Xavier/Orin only) |
 | `--calib` | string | INT8 calibration algorithm |
 | `--calibration_images` | string | Calibration image list file |
+
+### Model optimization flags
+
+| Flag | Type | Description |
+|---|---|---|
+| `--first` | bool | Skip INT8 quantization on the first layer (recommended: `true`) |
+| `--last` | bool | Skip INT8 quantization on the last layer |
+| `--sparse` | bool | Enable 2:4 structured sparsity (Ampere+ GPU required) |
+| `--dla` | int | DLA core index — `0` or `1`; **Xavier / Orin only** |
+
+> See [Tips](#tips) for details on each optimization technique.
 
 ### Inference flags
 
@@ -429,6 +437,60 @@ Point cloud files (binary `.bin` format from Seyond or compatible LiDAR) can be 
 ```
 
 Prints a table of per-layer latency to help identify bottlenecks.
+
+---
+
+## Tips
+
+### `--first` — Protect the First Layer from INT8 Quantization
+
+The first convolutional layer of a CNN processes raw pixel values and is highly sensitive to quantization error. Quantizing it to INT8 often causes a noticeable accuracy drop because the dynamic range of input activations is much wider than that of intermediate layers.
+
+```bash
+# Recommended: skip INT8 on the first layer
+./trt-lightnet --flagfile config.txt --precision int8 --first true
+```
+
+Setting `--first true` keeps the first layer in FP32 (or FP16) while quantizing the rest to INT8, giving the best accuracy–speed tradeoff. `--last true` does the same for the final output layer.
+
+---
+
+### `--sparse` — 2:4 Structured Sparsity
+
+2:4 structured sparsity enforces that **at least 2 out of every 4 consecutive weights are zero**. NVIDIA Ampere (and later) GPUs have dedicated sparse tensor cores that exploit this pattern for a near **2× throughput boost** with no additional latency penalty.
+
+```
+Before sparsity:  [0.3, -0.7,  0.1, -0.5]
+After  sparsity:  [0.0, -0.7,  0.0, -0.5]  ← 2 zeros forced per 4 values
+```
+
+**Requirements:**
+- GPU: Ampere (RTX 30xx / A-series) or later
+- The model must have been **trained with sparsity-aware training** (e.g. NVIDIA ASP or PyTorch semi-structured sparsity). Enabling `--sparse` on a dense model will degrade accuracy.
+
+```bash
+./trt-lightnet --flagfile config.txt --precision fp16 --sparse true
+```
+
+---
+
+### `--dla` — NVIDIA Deep Learning Accelerator
+
+DLA is a fixed-function hardware accelerator built into **Jetson Xavier and Orin** SoCs. Offloading layers to DLA frees the GPU for other tasks and significantly reduces power consumption — important for battery-constrained or thermally-limited deployments.
+
+```bash
+# Use DLA core 0 (Xavier / Orin only)
+./trt-lightnet --flagfile config.txt --precision int8 --first true --dla 0
+```
+
+**Key points:**
+- DLA only supports **INT8** (and limited FP16) precision.
+- Not all layer types are supported by DLA; unsupported layers automatically fall back to GPU.
+- Two DLA cores are available (`--dla 0` or `--dla 1`) and can be used simultaneously for different models.
+- DLA is **not available** on desktop/server GPUs — use only on Jetson Xavier / Orin.
+
+For a detailed overview of DLA architecture and usage in autonomous driving, see:
+> [TIER IV Tech Blog — NVDLA on Jetson (docswell, 2023)](https://www.docswell.com/s/TIER_IV/KGX2L8-2023-07-24-120048#p27)
 
 ---
 
