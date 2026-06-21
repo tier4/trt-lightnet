@@ -42,7 +42,7 @@
 | Dependency | Version |
 |---|---|
 | CUDA | 11.0 or later |
-| TensorRT | 8.5 or 8.6 |
+| TensorRT | 8.5, 8.6, or **10.x** |
 | CMake | 3.10+ |
 | GCC | ≤ 11.x |
 
@@ -52,6 +52,7 @@
 - CUDA 12.2 + TensorRT 8.6.0 on Ubuntu 22.04
 - CUDA 11.4 + TensorRT 8.6.0 on Jetson JetPack 5.1
 - CUDA 11.8 + TensorRT 8.6.1 on Ubuntu 22.04
+- CUDA 12.x + TensorRT 10.x on Ubuntu 22.04
 
 ### Docker Build
 
@@ -139,12 +140,23 @@ cd build
 
 ### 2. Run Inference
 
+Three mutually exclusive input sources are supported:
+
+| Flag | Type | Input source |
+|---|---|---|
+| `--d <path>` | string | Directory of image files — iterates in filename order. Press **Space** to advance, **q** to quit. |
+| `--v <path>` | string | Video file (MP4, AVI, etc.) — plays frame by frame. |
+| `--cam <id>` | int | Live camera — opens the device at `/dev/video<id>` via OpenCV. Use `0` for the default webcam. |
+
 ```bash
-# From an image directory (press Space to advance, q to quit)
+# From an image directory
 ./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 --d /path/to/images
 
 # From a video file
 ./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 --v /path/to/video.mp4
+
+# From a live camera (device ID 0)
+./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 --cam 0
 
 # Save detection results to disk
 ./trt-lightnet --flagfile ../configs/YOUR_CONFIG.txt --precision fp16 \
@@ -284,8 +296,9 @@ All flags can be set in a config file (`--flagfile`) or passed directly on the c
 
 | Flag | Type | Description |
 |---|---|---|
-| `--d` | string | Directory of images to process |
-| `--v` | string | Video file to process |
+| `--d` | string | Directory of images — iterates in filename order (Space: next, q: quit) |
+| `--v` | string | Video file (MP4, AVI, etc.) |
+| `--cam` | int | Live camera device ID (e.g. `0` for `/dev/video0`) |
 | `--save-detections` | bool | Save detection output images |
 | `--save-detections-path` | string | Output directory for saved results |
 | `--profile` | bool | Print per-layer latency profile |
