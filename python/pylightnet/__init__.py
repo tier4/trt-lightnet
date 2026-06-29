@@ -828,6 +828,14 @@ def parse_build_config(config_dict):
     build_config.dla_core_id = -1
     build_config.quantize_first_layer = False
     build_config.quantize_last_layer = False
+    # Honor --first / --last from the pipeline .txt so that PARTIAL INT8 (first and
+    # last layers kept in higher precision) can be built via pylightnet. Without this,
+    # these flags are read only by the trt-lightnet CLI (config_parser.cpp) and ignored
+    # here, so --precision=int8 always builds FULL int8 regardless of --first/--last.
+    # Gated on precision==int8 so fp16/fp32 engine cache names are unaffected.
+    if str(config_dict.get("precision", "")).lower() == "int8":
+        build_config.quantize_first_layer = bool(config_dict.get("first", False))
+        build_config.quantize_last_layer = bool(config_dict.get("last", False))
     build_config.profile_per_layer = True
     build_config.clip_value = -1
     if "sparse" in config_dict:
