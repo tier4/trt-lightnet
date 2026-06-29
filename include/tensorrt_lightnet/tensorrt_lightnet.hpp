@@ -459,7 +459,20 @@ public:
    * @param images A vector of input images (cv::Mat) to preprocess.
    */
   void preprocess_gpu(const std::vector<cv::Mat> &images);
-  
+
+  /**
+   * @brief Preprocesses a batch of variable-size images on the GPU for inference.
+   *
+   * Unlike preprocess_gpu (single image), this handles a full batch of crops with
+   * differing dimensions: each crop is uploaded (one concatenated H->D copy) and
+   * resized + normalized + BGR->RGB on the GPU (blobFromImageGpu) directly into its
+   * NCHW batch slot. Replaces the CPU cv::dnn::blobFromImages path for the subnet,
+   * which dominated per-frame time.
+   *
+   * @param images A vector of input images (cv::Mat, CV_8UC3) to preprocess.
+   */
+  void preprocess_gpu_batch(const std::vector<cv::Mat> &images);
+
   /**
    * Retrieves bounding boxes for a given image size.
    * @param imageH height of the image.
@@ -1111,6 +1124,15 @@ public:
    * @brief Device-side pointer for storing image data after transferring from the host.
    */
   unsigned char* d_img_;
+
+  /**
+   * @brief Host/device scratch buffers + capacity for preprocess_gpu_batch (concatenated
+   * variable-size crops). Grown on demand; separate from h_img_/d_img_ to avoid disturbing
+   * the single-image preprocess_gpu path.
+   */
+  unsigned char* h_batch_ = nullptr;
+  unsigned char* d_batch_ = nullptr;
+  size_t batch_buf_cap_ = 0;
 
   /**
    * @brief Device-side unique pointer for storing the depth map generated on the GPU.
