@@ -619,6 +619,77 @@ namespace tensorrt_lightnet
   }
 
   /**
+   * @brief GPU preprocessing for a batch of variable-size crops (subnet path).
+   *
+   * Packs all crops into one pinned buffer, does a single H->D copy, then resizes +
+   * normalizes + BGR->RGB each crop on the GPU (blobFromImageGpu) into its NCHW batch
+   * slot. Replaces the CPU cv::dnn::blobFromImages path, which was the per-frame
+   * bottleneck (it built a ~157 MB float blob on the CPU and copied it H->D).
+   */
+  void TrtLightnet::preprocess_gpu_batch(const std::vector<cv::Mat> &images) {
+    if (images.empty()) {
+      std::cerr << "preprocess_gpu_batch called with an empty image batch." << std::endl;
+      return;
+    }
+    const auto batch_size = images.size();
+    auto input_dims = trt_common_->getBindingDimensions(0);
+    input_dims.d[0] = batch_size;
+    trt_common_->setBindingDimensions(0, input_dims);
+    const int inputH = input_dims.d[2];
+    const int inputW = input_dims.d[3];
+    const int inputC = input_dims.d[1];
+
+    // GPU kernel assumes 3-channel input; fall back to the CPU path for anything else.
+    if (inputC != 3) {
+      preprocess(images);
+      return;
+    }
+
+    const float norm = 1.0f / 255.0f;
+    const size_t slot = static_cast<size_t>(inputC) * inputH * inputW; // floats per image (NCHW)
+
+    // Ensure each crop is contiguous BGR8; compute concatenated byte offsets.
+    std::vector<cv::Mat> src(batch_size);
+    std::vector<size_t> off(batch_size);
+    size_t total = 0;
+    for (size_t b = 0; b < batch_size; ++b) {
+      src[b] = images[b].isContinuous() ? images[b] : images[b].clone();
+      off[b] = total;
+      total += static_cast<size_t>(src[b].rows) * src[b].cols * 3;
+    }
+
+    // Grow scratch buffers on demand (pinned host + device), kept across calls.
+    if (total > batch_buf_cap_) {
+      if (h_batch_) { cudaFreeHost(h_batch_); h_batch_ = nullptr; }
+      if (d_batch_) { cudaFree(d_batch_);     d_batch_ = nullptr; }
+      CHECK_CUDA_ERROR(cudaMallocHost(reinterpret_cast<void**>(&h_batch_), total));
+      CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_batch_), total));
+      batch_buf_cap_ = total;
+    }
+
+    // Pack crops into pinned host memory, then one async H->D copy (no per-crop race:
+    // all host memcpys complete before the single copy; kernels read device-side after).
+    for (size_t b = 0; b < batch_size; ++b) {
+      memcpy(h_batch_ + off[b], src[b].data,
+             static_cast<size_t>(src[b].rows) * src[b].cols * 3);
+    }
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_batch_, h_batch_, total,
+                                     cudaMemcpyHostToDevice, *stream_));
+
+    // Resize + normalize + BGR->RGB each crop into its disjoint NCHW batch slot.
+    // Uses the OpenCV-compatible bilinear kernel so detections match the CPU path.
+    for (size_t b = 0; b < batch_size; ++b) {
+      blobFromImageBilinearGpu(
+          reinterpret_cast<float*>(input_d_.get()) + b * slot,
+          d_batch_ + off[b],
+          inputW, inputH, inputC,
+          src[b].cols, src[b].rows, 3,
+          norm,
+          *stream_);
+    }
+  }
+
+  /**
    * Prepares the inference by ensuring the network is initialized and setting up the input tensor.
    * @return True if the network is already initialized; false otherwise.
    */

@@ -17,6 +17,7 @@
 #include <sensor/CalibratedSensorParser.h>
 #include <pcdUtils/pcd2image.hpp>
 #include <cstdint>
+#include <cstdlib>
 
 constexpr int MAX_STRING_SIZE = 256;
 constexpr int MAX_ANCHORS = 40;
@@ -752,7 +753,17 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
         return;
     }    
     
-    lightnet->preprocess(images);
+    // CPU preprocessing by default (preserves existing behavior). The GPU batch path
+    // (preprocess_gpu_batch) moves the subnet's resize/normalize off the CPU — typically
+    // the per-frame bottleneck — but it is OPT-IN so default output is unchanged: enable
+    // with environment variable SUBNET_GPU_PREPROCESS=1.
+    static const char* gpu_pre_env = std::getenv("SUBNET_GPU_PREPROCESS");
+    static const bool subnet_gpu_pre = (gpu_pre_env != nullptr && gpu_pre_env[0] == '1');
+    if (subnet_gpu_pre) {
+      lightnet->preprocess_gpu_batch(images);
+    } else {
+      lightnet->preprocess(images);
+    }
     lightnet->doInference(static_cast<int>(images.size()));
 
 

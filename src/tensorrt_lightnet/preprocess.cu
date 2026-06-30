@@ -108,11 +108,62 @@ void blobFromImageGpu(float *dst, unsigned char*src, int d_w, int d_h, int d_c,
   float stride_h = (float)s_h / (float)d_h;
   float stride_w = (float)s_w / (float)d_w;
   //SimpleblobFromImageKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, dst, src,
-  blobFromImageKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, dst, src,   
+  blobFromImageKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, dst, src,
 							      d_h, d_w,
 							      s_h, s_w,
 							      stride_h, stride_w, norm);
 
+}
+
+// OpenCV INTER_LINEAR-compatible bilinear resize + normalize + BGR->RGB into NCHW.
+// Matches cv::dnn::blobFromImages closely (half-pixel centers, edge clamp) so the GPU
+// subnet preprocessing is detection-equivalent to the CPU path it replaces, unlike the
+// legacy blobFromImageKernel (lerp2d) which is low-fidelity on upscaled crops.
+__global__ void blobFromImageBilinearKernel(int N, float* dst_img, const unsigned char* src_img,
+                                            int dst_h, int dst_w, int src_h, int src_w,
+                                            float scale_h, float scale_w, float norm)
+{
+  int index = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+  if (index >= N) return;
+  const int chan = 3;
+  int w = index % dst_w;
+  int h = index / dst_w;
+
+  float fx = (w + 0.5f) * scale_w - 0.5f;
+  float fy = (h + 0.5f) * scale_h - 0.5f;
+  if (fx < 0.0f) fx = 0.0f;
+  if (fy < 0.0f) fy = 0.0f;
+  int x0 = (int)fx;
+  int y0 = (int)fy;
+  int x1 = (x0 + 1 < src_w) ? x0 + 1 : x0;
+  int y1 = (y0 + 1 < src_h) ? y0 + 1 : y0;
+  float ax = fx - (float)x0;
+  float ay = fy - (float)y0;
+
+  int i00 = (y0 * src_w + x0) * chan;
+  int i01 = (y0 * src_w + x1) * chan;
+  int i10 = (y1 * src_w + x0) * chan;
+  int i11 = (y1 * src_w + x1) * chan;
+
+  for (int c = 0; c < chan; c++) {
+    float top = (float)src_img[i00 + c] * (1.0f - ax) + (float)src_img[i01 + c] * ax;
+    float bot = (float)src_img[i10 + c] * (1.0f - ax) + (float)src_img[i11 + c] * ax;
+    float val = top * (1.0f - ay) + bot * ay;
+    int dst_index = w + (dst_w * h) + (dst_w * dst_h * (2 - c)); // BGR->RGB
+    dst_img[dst_index] = val * norm;
+  }
+}
+
+void blobFromImageBilinearGpu(float *dst, unsigned char *src, int d_w, int d_h, int d_c,
+                              int s_w, int s_h, int s_c, float norm, cudaStream_t stream)
+{
+  int N = d_w * d_h;
+  float scale_h = (float)s_h / (float)d_h;
+  float scale_w = (float)s_w / (float)d_w;
+  blobFromImageBilinearKernel<<<cuda_gridsize(N), BLOCK, 0, stream>>>(N, dst, src,
+                                                                     d_h, d_w,
+                                                                     s_h, s_w,
+                                                                     scale_h, scale_w, norm);
 }
 
 __global__ void resizeNearestNeighborKernel(int N, unsigned char* dst_img, unsigned char* src_img, 
