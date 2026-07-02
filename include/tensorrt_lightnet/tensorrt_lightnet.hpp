@@ -1070,8 +1070,8 @@ public:
    * variable-size crops). Grown on demand; separate from h_img_/d_img_ to avoid disturbing
    * the single-image preprocess_gpu path.
    */
-  unsigned char* h_batch_ = nullptr;
-  unsigned char* d_batch_ = nullptr;
+  CudaUniquePtrHost<unsigned char[]> h_batch_;
+  CudaUniquePtr<unsigned char[]> d_batch_;
   size_t batch_buf_cap_ = 0;
 
   /**

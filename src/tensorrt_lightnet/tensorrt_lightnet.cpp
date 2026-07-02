@@ -544,15 +544,7 @@ namespace tensorrt_lightnet
   }
 
   TrtLightnet::~TrtLightnet() {
-    if (h_batch_) {
-      cudaFreeHost(h_batch_);
-      h_batch_ = nullptr;
-    }
-    if (d_batch_) {
-      cudaFree(d_batch_);
-      d_batch_ = nullptr;
-    }
-    batch_buf_cap_ = 0;
+    // Cleanup is handled by RAII members.
   }
   
   /**
@@ -698,6 +690,14 @@ namespace tensorrt_lightnet
       preprocess(images);
       return;
     }
+    // Packing below assumes CV_8UC3 crops; fall back to the CPU path for anything else
+    // (infer_batches also accepts CV_8UC1, which preprocess() handles via cvtColor).
+    for (const auto & im : images) {
+      if (im.type() != CV_8UC3) {
+        preprocess(images);
+        return;
+      }
+    }
 
     const float norm = 1.0f / 255.0f;
     const size_t slot = static_cast<size_t>(inputC) * inputH * inputW; // floats per image (NCHW)
@@ -707,31 +707,25 @@ namespace tensorrt_lightnet
     std::vector<size_t> off(batch_size);
     size_t total = 0;
     for (size_t b = 0; b < batch_size; ++b) {
-      if (images[b].type() != CV_8UC3) {
-        preprocess(images);
-        return;
-      }
       src[b] = images[b].isContinuous() ? images[b] : images[b].clone();
       off[b] = total;
       total += static_cast<size_t>(src[b].rows) * src[b].cols * 3;
     }
 
-    // Grow scratch buffers on demand (pinned host + device), kept across calls.
+    // Grow scratch buffers on demand; reused across calls.
     if (total > batch_buf_cap_) {
-      if (h_batch_) { cudaFreeHost(h_batch_); h_batch_ = nullptr; }
-      if (d_batch_) { cudaFree(d_batch_);     d_batch_ = nullptr; }
-      CHECK_CUDA_ERROR(cudaMallocHost(reinterpret_cast<void**>(&h_batch_), total));
-      CHECK_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&d_batch_), total));
+      h_batch_ = cuda_utils::make_unique_host<unsigned char[]>(total, cudaHostAllocDefault);
+      d_batch_ = cuda_utils::make_unique<unsigned char[]>(total);
       batch_buf_cap_ = total;
     }
 
     // Pack crops into pinned host memory, then one async H->D copy (no per-crop race:
     // all host memcpys complete before the single copy; kernels read device-side after).
     for (size_t b = 0; b < batch_size; ++b) {
-      memcpy(h_batch_ + off[b], src[b].data,
+      memcpy(h_batch_.get() + off[b], src[b].data,
              static_cast<size_t>(src[b].rows) * src[b].cols * 3);
     }
-    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_batch_, h_batch_, total,
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(d_batch_.get(), h_batch_.get(), total,
                                      cudaMemcpyHostToDevice, *stream_));
 
     // Resize + normalize + BGR->RGB each crop into its disjoint NCHW batch slot.
@@ -739,7 +733,7 @@ namespace tensorrt_lightnet
     for (size_t b = 0; b < batch_size; ++b) {
       blobFromImageBilinearGpu(
           reinterpret_cast<float*>(input_d_.get()) + b * slot,
-          d_batch_ + off[b],
+          d_batch_.get() + off[b],
           inputW, inputH, inputC,
           src[b].cols, src[b].rows, 3,
           norm,
