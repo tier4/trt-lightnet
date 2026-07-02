@@ -110,7 +110,6 @@ public:
 
   /**
    * @brief Decode data in calibration
-   * @param[in] scale normalization (0.0-1.0)
    * @return bool succ or fail
    */
   bool next(void)

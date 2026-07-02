@@ -19,10 +19,19 @@
 namespace tensorrt_common
 {
 
+/**
+ * @brief Constructs a profiler, optionally seeding it by merging existing profilers.
+ *
+ * Records from each source profiler are merged by layer name: a new layer is
+ * inserted as-is, while an already-seen layer has its accumulated time and
+ * invocation count added together.
+ *
+ * @param name Human-readable name used in the profile report header.
+ * @param src_profilers Profilers whose records are merged into this one (may be empty).
+ */
 SimpleProfiler::SimpleProfiler(std::string name, const std::vector<SimpleProfiler> & src_profilers)
 : m_name(name)
 {
-  float total_time = 0.0;
   m_index = 0;
   for (const auto & src_profiler : src_profilers) {
     for (const auto & rec : src_profiler.m_profile) {
@@ -32,12 +41,21 @@ SimpleProfiler::SimpleProfiler(std::string name, const std::vector<SimpleProfile
       } else {
         it->second.time += rec.second.time;
         it->second.count += rec.second.count;
-        total_time += rec.second.time;
       }
     }
   }
 }
 
+/**
+ * @brief Callback invoked by TensorRT to report the runtime of a single layer.
+ *
+ * Accumulates the elapsed time and invocation count for the layer, tracks its
+ * minimum observed time, and assigns a stable display index the first time the
+ * layer is seen.
+ *
+ * @param layerName Name of the layer being reported.
+ * @param ms Elapsed execution time of the layer in milliseconds.
+ */
 void SimpleProfiler::reportLayerTime(const char * layerName, float ms) noexcept
 {
   m_profile[layerName].count++;
@@ -51,10 +69,18 @@ void SimpleProfiler::reportLayerTime(const char * layerName, float ms) noexcept
   }
 }
 
+/**
+ * @brief Records structural metadata (shape, kernel, stride, groups) for a layer.
+ *
+ * Stores the layer type for every layer, and for convolution layers additionally
+ * captures the input/output channel counts, spatial size, kernel size, stride
+ * and group count for use in the profile report.
+ *
+ * @param layer The TensorRT layer to inspect.
+ */
 void SimpleProfiler::setProfDict(nvinfer1::ILayer * layer) noexcept
 {
   std::string name = layer->getName();
-  m_layer_dict[name];
   m_layer_dict[name].type = layer->getType();
   if (layer->getType() == nvinfer1::LayerType::kCONVOLUTION) {
     nvinfer1::IConvolutionLayer * conv = (nvinfer1::IConvolutionLayer *)layer;
@@ -72,12 +98,22 @@ void SimpleProfiler::setProfDict(nvinfer1::ILayer * layer) noexcept
     m_layer_dict[name].w = dim_in.d[3];
     m_layer_dict[name].h = dim_in.d[2];
     m_layer_dict[name].k = kernel;
-    ;
     m_layer_dict[name].stride = stride;
     m_layer_dict[name].groups = groups;
   }
 }
 
+/**
+ * @brief Streams a formatted, column-aligned profile report.
+ *
+ * Prints one row per layer (in first-seen order) showing the share of total
+ * runtime, invocation count, total/average/minimum runtime, followed by the
+ * overall total runtime. Stream formatting flags are saved and restored.
+ *
+ * @param out Output stream to write to.
+ * @param value Profiler whose records are reported.
+ * @return The same output stream, to allow chaining.
+ */
 std::ostream & operator<<(std::ostream & out, SimpleProfiler & value)
 {
   out << "========== " << value.m_name << " profile ==========" << std::endl;

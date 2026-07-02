@@ -571,6 +571,12 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     return bbox_c_array.data();
   }
 
+  /**
+   * @brief Returns the top (most probable) class index from the last inference.
+   *
+   * @param instance Opaque pointer to a TrtLightnet instance.
+   * @return The top class index, or -1 if @p instance is null.
+   */
   int get_top_index(void* instance)
   {
     if (!instance) {
@@ -718,6 +724,22 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     return annotation_str.c_str();
   }
 
+  /**
+   * @brief Runs batched inference over multiple images and returns per-batch detections.
+   *
+   * Wraps each raw image buffer in a cv::Mat (1- or 3-channel), runs the model
+   * once over the whole batch, and writes the resulting bounding boxes back
+   * through the output pointers as C-ABI structures.
+   *
+   * @param instance Opaque pointer to a TrtLightnet instance.
+   * @param imgs Array of @p batch_size raw image buffers.
+   * @param heights Array of per-image heights.
+   * @param widths Array of per-image widths.
+   * @param channels Array of per-image channel counts (1 or 3).
+   * @param batch_size Number of images in the batch.
+   * @param out_bboxes Output: array of detection arrays, one per image.
+   * @param out_bbox_count Output: number of detections per image.
+   */
   void infer_batches(
     void* instance,
     unsigned char** imgs,
@@ -728,7 +750,7 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     BBoxInfoC** out_bboxes,
     int* out_bbox_count
 		     )
-  {		     
+  {
     std::vector<cv::Mat> images;
     auto lightnet = *static_cast<std::shared_ptr<tensorrt_lightnet::TrtLightnet>*>(instance);
     for (int i = 0; i < batch_size; ++i) {
@@ -932,13 +954,14 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
  /**
  * @brief Perform batch inference on a subset of bounding boxes detected by the main network using a subnet.
  *
- * @param lightnet Pointer to the main TrtLightnet instance.
+ * @param bbox Bounding boxes detected by the main network to feed into the subnet.
  * @param subnet Pointer to the subnet TrtLightnet instance.
  * @param image Input image.
  * @param width Width of the image.
  * @param height Height of the image.
  * @param cuda Flag indicating whether to use CUDA.
  * @param target Array of target class names.
+ * @param names Vector of class names corresponding to class IDs.
  * @param count Number of target classes.
  */
   void infer_batch_from_bboxes(std::vector<tensorrt_lightnet::BBoxInfo> &bbox,  std::shared_ptr<tensorrt_lightnet::TrtLightnet> subnet, cv::Mat &image, int width, int height, bool cuda, char** target, std::vector<std::string> &names, int count) {
@@ -1007,11 +1030,14 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
   /**
    * @brief Perform inference with the TrtLightnet model.
    * 
-   * @param instance Pointer to the TrtLightnet instance.
+   * @param instance Pointer to the main TrtLightnet instance.
+   * @param sub_instance Pointer to the subnet TrtLightnet instance.
    * @param img_data Pointer to the image data.
    * @param width Image width.
    * @param height Image height.
    * @param cuda If true, use GPU for preprocessing; otherwise, use CPU.
+   * @param target Array of target class names.
+   * @param count Number of target classes.
    */
   void infer_multi_stage_lightnet_wrapper(void* instance, void* sub_instance, unsigned char* img_data, int width, int height, bool cuda, char** target, int count)
   {
@@ -1393,8 +1419,15 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     return c_info;
   }
 
+  /**
+   * @brief Frees the heap-allocated image buffer owned by a C_ImageResult.
+   *
+   * Must be called from the C/Python side once the result has been consumed to
+   * avoid leaking the buffer allocated on the C++ side.
+   *
+   * @param result The image result whose data pointer is released.
+   */
   void free_image_result(C_ImageResult result) {
-    // Frees the memory allocated for the image data pointer
     std::free(result.data);
   }
 
