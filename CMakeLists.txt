@@ -16,7 +16,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(OpenMP REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
 # Uncomment for debugging:
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -Wno-write-strings -Wall ${OpenMP_CXX_FLAGS}")
 
 # Ensure the loader can find co-located shared libraries at runtime
 set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath -Wl,$ORIGIN")

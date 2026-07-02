@@ -33,10 +33,6 @@ class CalibratedSensorParser {
  public:
   /**
    * Parses a JSON file containing calibrated sensor information and populates a vector of CalibratedSensorInfo structures.
-   *
-   * @param fileName The name of the JSON file to parse.
-   * @param entries A vector to store the parsed CalibratedSensorInfo structures.
-   * @throws std::runtime_error If the file cannot be opened or parsed.
    */
   static void parse(const std::string& fileName, std::vector<CalibratedSensorInfo>& entries);
 };

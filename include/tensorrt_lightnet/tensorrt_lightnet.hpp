@@ -278,15 +278,7 @@ public:
    * workspace size based on the given settings. If INT8 precision is specified, it also manages the
    * calibration process using provided calibration images. Exception handling is included to ensure
    * that necessary prerequisites for chosen precision modes are met.
-   *
-   * @param model_config Configuration struct containing model-specific parameters such as path, class number,
-   * score threshold, NMS threshold, and anchor configurations.
-   * @param inference_config Configuration struct containing inference-specific settings like precision,
-   * calibration images, workspace size, and batch configuration.
-   * @param build_config Struct containing build-specific settings for TensorRT including the calibration type and clip value.
-   * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
-   * TensorRT engine initialization fails.
-   */  
+   */
   TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format);
 
   /**
@@ -344,26 +336,11 @@ public:
   
   /**
    * Draws bounding boxes on an image.
-   * @param img the image on which to draw bounding boxes.
-   * @param bboxes the bounding boxes to draw.
-   * @param colormap the colors for each class.
-   * @param names the names of the classes.
    */
   void drawBbox(cv::Mat &img, std::vector<BBoxInfo> bboxes, std::vector<std::vector<int>> &colormap, std::vector<std::string> names);
 
   /**
    * Decodes the output tensor into bounding box information.
-   * @param imageIdx index of the image being processed.
-   * @param imageH height of the image.
-   * @param imageW width of the image.
-   * @param inputH height of the input tensor.
-   * @param inputW width of the input tensor.
-   * @param anchor array of anchor sizes.
-   * @param anchor_num number of anchors.
-   * @param output output tensor from the network.
-   * @param gridW width of the grid.
-   * @param gridH height of the grid.
-   * @return vector of bounding box information.
    */
   std::vector<BBoxInfo> decodeTensor(const int imageIdx, const int imageH, const int imageW, const int inputH, const int inputW, const int *anchor, const int anchor_num, const float *output, const int gridW, const int gridH);
 
@@ -397,56 +374,26 @@ public:
   
   /**
    * Applies non-maximum suppression to filter overlapping bounding boxes.
-   * @param nmsThresh threshold for suppression.
-   * @param binfo vector of bounding box information before suppression.
-   * @return vector of bounding box information after suppression.
    */
   std::vector<BBoxInfo> nonMaximumSuppression(const float nmsThresh, std::vector<BBoxInfo> binfo);
 
   /**
    * Applies NMS on all classes.
-   * @param nmsThresh threshold for suppression.
-   * @param binfo vector of bounding box information before suppression.
-   * @param numClasses number of classes.
-   * @return vector of bounding box information after suppression.
    */
   std::vector<BBoxInfo> nmsAllClasses(const float nmsThresh, std::vector<BBoxInfo>& binfo, const uint32_t numClasses);
 
   /**
    * Converts bounding box results from the network's output format.
-   * @param bx x-coordinate of the center of the box.
-   * @param by y-coordinate of the center of the box.
-   * @param bw width of the box.
-   * @param bh height of the box.
-   * @param stride_h_ stride height.
-   * @param stride_w_ stride width.
-   * @param netW network width.
-   * @param netH network height.
-   * @return converted bounding box.
    */
   BBox convertBboxRes(const float& bx, const float& by, const float& bw, const float& bh, const uint32_t& stride_h_, const uint32_t& stride_w_, const uint32_t& netW, const uint32_t& netH);
 
   /**
    * Adds a bounding box proposal.
-   * @param bx x-coordinate of the center of the box.
-   * @param by y-coordinate of the center of the box.
-   * @param bw width of the box.
-   * @param bh height of the box.
-   * @param stride_h_ stride height.
-   * @param stride_w_ stride width.
-   * @param maxIndex class with the highest probability.
-   * @param maxProb maximum probability.
-   * @param image_w image width.
-   * @param image_h image height.
-   * @param input_w input width.
-   * @param input_h input height.
-   * @param binfo vector to add bounding box information to.
    */
   void addBboxProposal(const float bx, const float by, const float bw, const float bh, const uint32_t stride_h_, const uint32_t stride_w_, const int maxIndex, const float maxProb, const uint32_t image_w, const uint32_t image_h, const uint32_t input_w, const uint32_t input_h, std::vector<BBoxInfo>& binfo);
 
   /**
    * Preprocesses the input images before feeding them to the network.
-   * @param images vector of images to preprocess.
    */
   void preprocess(const std::vector<cv::Mat> & images);
 
@@ -475,8 +422,6 @@ public:
 
   /**
    * Retrieves bounding boxes for a given image size.
-   * @param imageH height of the image.
-   * @param imageW width of the image.
    */
   void makeBbox(const int imageH, const int imageW);
 
@@ -499,7 +444,6 @@ public:
   void setDetectionColormap(std::vector<std::vector<int>> &colormap);
   /**
    * Generates depth maps from the network's output tensors that are not related to bounding box detections.
-   * @param depth_format depthmap format like "magma" and "grayscale".
    * The method identifies specific tensors for depth map generation based on channel size and name.
    */
   void makeDepthmap(std::string &depth_format);
@@ -531,11 +475,7 @@ public:
    *
    * This function processes depth map tensors and applies GPU-based back projection
    * to generate a BEV map using calibration data and masks.
-   *
-   * @param im_w Image width of the original input.
-   * @param im_h Image height of the original input.
-   * @param calibdata Calibration data required for back projection.
-   */  
+   */
   void makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding);
 
   /**
@@ -772,8 +712,6 @@ public:
    * Converts the segmentation output to mask images.
    * Each pixel in the mask image is colored based on the class it belongs to,
    * using the provided mapping from classes to colors.
-   * 
-   * @param argmax2bgr A vector containing the mapping from segmentation classes to their corresponding colors in BGR format.
    */
   void makeMask(std::vector<cv::Vec3b> &argmax2bgr);
 
@@ -961,6 +899,11 @@ public:
   void writeSegmentationAnnotation(const std::string json_path, const std::string image_name, int width, int height, std::vector<Colormap> colormap);
 
   /**
+   * Extracts per-class polygons from semantic segmentation outputs and generates a JSON annotation string.
+   */
+  std::string getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap);
+
+  /**
    * @brief Retrieves the input size of the TensorRT model.
    *
    * This function extracts the input dimensions of the TensorRT model's first binding tensor.
@@ -970,9 +913,6 @@ public:
    * @param height Pointer to store the height.
    * @param width Pointer to store the width.
    */
-
-  std::string getSegmentationAnnotationStr(const std::string image_name, int width, int height, std::vector<Colormap> colormap);
-  
   void getInputSize(int *batch, int *chan, int *height, int *width);
   
   /**
