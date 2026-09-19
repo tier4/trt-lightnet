@@ -517,7 +517,8 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
     if (cuda) {
       lightnet->preprocess_gpu({image});
     } else {
-      lightnet->preprocess({image});
+      // lightnet->preprocess({image});
+      lightnet->preprocess_fused({image});
     }
 
     // Inference
@@ -753,16 +754,18 @@ void* create_trt_lightnet(const ModelConfigC *modelConfigC, const InferenceConfi
         return;
     }    
     
-    // CPU preprocessing by default (preserves existing behavior). The GPU batch path
-    // (preprocess_gpu_batch) moves the subnet's resize/normalize off the CPU — typically
-    // the per-frame bottleneck — but it is OPT-IN so default output is unchanged: enable
-    // with environment variable SUBNET_GPU_PREPROCESS=1.
+    // CPU preprocessing by default (preserves existing behavior). The CPU path uses
+    // preprocess_fused, a single-pass resize/normalize/BGR->RGB/HWC->CHW variant that
+    // reproduces preprocess()'s output without the intermediate NCHW blob. The GPU batch
+    // path (preprocess_gpu_batch) moves the subnet's resize/normalize off the CPU —
+    // typically the per-frame bottleneck — but it is OPT-IN: enable with environment
+    // variable SUBNET_GPU_PREPROCESS=1.
     static const char* gpu_pre_env = std::getenv("SUBNET_GPU_PREPROCESS");
     static const bool subnet_gpu_pre = (gpu_pre_env != nullptr && gpu_pre_env[0] == '1');
     if (subnet_gpu_pre) {
       lightnet->preprocess_gpu_batch(images);
     } else {
-      lightnet->preprocess(images);
+      lightnet->preprocess_fused(images);
     }
     lightnet->doInference(static_cast<int>(images.size()));
 
@@ -832,7 +835,8 @@ void infer_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet, std:
 
         cv::Rect roi(b.box.x1, b.box.y1, b.box.x2 - b.box.x1, b.box.y2 - b.box.y1);
         cv::Mat cropped = image(roi);
-        subnet->preprocess({cropped});
+        // subnet->preprocess({cropped});
+        subnet->preprocess_fused({cropped});
         subnet->doInference();
         subnet->makeBbox(cropped.rows, cropped.cols);
 
@@ -894,7 +898,8 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
       return;
     }
     
-    subnet->preprocess(cropped);
+    // subnet->preprocess(cropped);
+    subnet->preprocess_fused(cropped);
     subnet->doInference(static_cast<int>(cropped.size()));
 
     int actual_batch_size = 0;
@@ -969,7 +974,8 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
       return;
     }
 
-    subnet->preprocess(cropped);
+    // subnet->preprocess(cropped);
+    subnet->preprocess_fused(cropped);
     subnet->doInference(static_cast<int>(cropped.size()));
 
     int actual_batch_size = 0;
@@ -1029,7 +1035,8 @@ void infer_batch_subnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> lightnet
     if (cuda) {
       lightnet->preprocess_gpu({image});
     } else {
-      lightnet->preprocess({image});
+      // lightnet->preprocess({image});
+      lightnet->preprocess_fused({image});
     }
 
     // Inference
