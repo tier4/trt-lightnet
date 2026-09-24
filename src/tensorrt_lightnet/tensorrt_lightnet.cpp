@@ -45,6 +45,7 @@ SOFTWARE.
 #include <tensorrt_lightnet/tensorrt_lightnet.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <numeric>
@@ -553,6 +554,81 @@ namespace tensorrt_lightnet
     input_h_ = nchw_images.isContinuous() ? nchw_images.reshape(1, nchw_images.total()) : nchw_images.reshape(1, nchw_images.total()).clone();
     // Ensure the input device buffer is allocated with the correct size and copy the data.
     CHECK_CUDA_ERROR(cudaMemcpyAsync(input_d_.get(), input_h_.data(), input_h_.size() * sizeof(float), cudaMemcpyHostToDevice, *stream_));    
+  }
+  
+  /**
+   * Fused-loop CPU variant of preprocess() that performs
+   * resize + scale + BGR->RGB + HWC->CHW in a single pass with plain scalar inner
+   * loops, writing into the host buffer input_h_. Reproduces the output of
+   * cv::dnn::blobFromImages(src, 1/255, Size(inputW,inputH), Scalar(0), swapRB=true)
+   * (default INTER_LINEAR, no aspect-ratio crop, mean 0) without the intermediate NCHW blob.
+   *
+   * @param images A vector of images (cv::Mat) to be processed.
+   */
+  void TrtLightnet::preprocess_fused(const std::vector<cv::Mat> &images) {
+    // Ensure there are images to process.
+    if (images.empty()) {
+      std::cerr << "Preprocess called with an empty image batch." << std::endl;
+      return;
+    }
+    const std::size_t batch_size = images.size();
+    auto input_dims = trt_common_->getBindingDimensions(0);
+    input_dims.d[0] = batch_size; // Adjust the batch size in dimensions.
+    trt_common_->setBindingDimensions(0, input_dims); // Update dimensions with the new batch size.
+    const float inputH = static_cast<float>(input_dims.d[2]);
+    const float inputW = static_cast<float>(input_dims.d[3]);
+    const float inputC = static_cast<float>(input_dims.d[1]);
+    std::vector<cv::Mat>  src;
+    if (inputC == 1) {
+      for (std::size_t b = 0; b < batch_size; b++) {
+        cv::Mat gray;
+        cv::cvtColor(images[b], gray, cv::COLOR_BGR2GRAY);
+        src.push_back(gray);
+      }
+    } else {
+      src = images;
+    }
+
+    // Normalize images and convert to blob directly without additional copying.
+    float scale = 1 / 255.0;
+    const std::size_t plane   = static_cast<std::size_t>(inputH) * static_cast<std::size_t>(inputW); // one channel
+    const std::size_t per_img = static_cast<std::size_t>(inputC) * plane;                            // one image (CHW)
+    input_h_.resize(batch_size * per_img);
+    float* const dst = input_h_.data();
+    cv::Mat resized;
+    for (std::size_t b = 0; b < batch_size; ++b) {
+      cv::resize(src[b], resized, cv::Size(inputW, inputH), 0, 0, cv::INTER_LINEAR);
+      if (inputC == 1) {
+        // Grayscale: normalize into the single plane.
+        float* ch = dst + b * per_img;
+        for (std::size_t y = 0; y < static_cast<std::size_t>(inputH); ++y) {
+          const uchar* row = resized.ptr<uchar>(y);
+          float* out = ch + y * static_cast<std::size_t>(inputW);
+          for (std::size_t x = 0; x < static_cast<std::size_t>(inputW); ++x) {
+            out[x] = row[x] * scale;
+          }
+        }
+      } else {
+        // Color: normalize + swap to RGB + split into CHW planes.
+        float* const rch = dst + b * per_img;
+        float* const gch = dst + b * per_img + 1 * plane;
+        float* const bch = dst + b * per_img + 2 * plane;
+        for (std::size_t y = 0; y < static_cast<std::size_t>(inputH); ++y) {
+          const uchar* row = resized.ptr<uchar>(y); // BGRBGR...
+          const std::size_t rowoff = y * static_cast<std::size_t>(inputW);
+          for (std::size_t x = 0; x < static_cast<std::size_t>(inputW); ++x) {
+            const uchar* px = row + x * 3;
+            const std::size_t idx = rowoff + x;
+            rch[idx] = px[2] * scale; // R
+            gch[idx] = px[1] * scale; // G
+            bch[idx] = px[0] * scale; // B
+          }
+        }
+      }
+    }
+
+    // Ensure the input device buffer is allocated with the correct size and copy the data.
+    CHECK_CUDA_ERROR(cudaMemcpyAsync(input_d_.get(), input_h_.data(), input_h_.size() * sizeof(float), cudaMemcpyHostToDevice, *stream_));
   }
 
   /**

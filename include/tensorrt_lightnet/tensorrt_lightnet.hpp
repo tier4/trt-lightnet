@@ -451,6 +451,13 @@ public:
   void preprocess(const std::vector<cv::Mat> & images);
 
   /**
+   * Fused-loop CPU variant of preprocess()
+   * Reproduces the output of cv::dnn::blobFromImages without the intermediate NCHW blob.
+   * @param images vector of images to preprocess.
+   */
+  void preprocess_fused(const std::vector<cv::Mat> & images);
+
+  /**
    * @brief Preprocesses input images on the GPU for inference.
    *
    * This function prepares the input image data to be compatible with the model's input dimensions.
