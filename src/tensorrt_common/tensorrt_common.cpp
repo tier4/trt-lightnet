@@ -24,7 +24,15 @@
 #include <string>
 #include <utility>
 
-// Convert BuildConfigC to tensorrt_common::BuildConfig
+/**
+ * @brief Converts a C-ABI BuildConfigC into the C++ tensorrt_common::BuildConfig.
+ *
+ * Copies the scalar fields and the (up to 10) non-empty debug tensor names.
+ * Does nothing if either pointer is null.
+ *
+ * @param src Source C-ABI configuration.
+ * @param dest Destination C++ configuration to populate.
+ */
 extern "C" void copy_to_cpp_build_config(const BuildConfigC* src, tensorrt_common::BuildConfig* dest) {
   if (!src || !dest) {
     std::cerr << "Error: Null pointer in copy_to_cpp_build_config.\n";
@@ -51,7 +59,15 @@ extern "C" void copy_to_cpp_build_config(const BuildConfigC* src, tensorrt_commo
   }
 }
 
-// Convert tensorrt_common::BuildConfig to BuildConfigC
+/**
+ * @brief Converts a C++ tensorrt_common::BuildConfig into the C-ABI BuildConfigC.
+ *
+ * Copies the scalar fields and the (up to 10) debug tensor names, ensuring all
+ * copied C strings are null-terminated. Does nothing if either pointer is null.
+ *
+ * @param src Source C++ configuration.
+ * @param dest Destination C-ABI configuration to populate.
+ */
 extern "C" void copy_to_c_build_config(const tensorrt_common::BuildConfig* src, BuildConfigC* dest) {
   if (!src || !dest) return;
 
@@ -73,7 +89,11 @@ extern "C" void copy_to_c_build_config(const tensorrt_common::BuildConfig* src, 
   }
 }
 
-// Print the contents of BuildConfigC
+/**
+ * @brief Prints the contents of a BuildConfigC to standard output (for debugging).
+ *
+ * @param config Configuration to print; ignored if null.
+ */
 extern "C" void print_build_config_c(const BuildConfigC* config) {
   if (!config) return;
 
@@ -93,6 +113,14 @@ extern "C" void print_build_config_c(const BuildConfigC* config) {
 
 namespace
 {
+/**
+ * @brief Returns true if the string @p s contains the substring/character @p v.
+ *
+ * @tparam T Anything accepted by std::string::find (e.g. std::string, const char*).
+ * @param s String to search within.
+ * @param v Value to search for.
+ * @return true if @p v occurs in @p s, false otherwise.
+ */
 template <class T>
 bool contain(const std::string & s, const T & v)
 {
@@ -310,11 +338,7 @@ bool TrtCommon::loadEngine(const std::string & engine_file_path)
 #endif
   engine_ = TrtUniquePtr<nvinfer1::ICudaEngine>(runtime_->deserializeCudaEngine(
     reinterpret_cast<const void *>(engine_str.data()), engine_str.size()));
-  if (engine_.get()) {
-    return true;
-  } else {
-    return false;
-  }
+  return engine_.get() != nullptr;
 }
 
 void TrtCommon::printNetworkInfo(const std::string & onnx_file_path)
@@ -381,7 +405,6 @@ void TrtCommon::printNetworkInfo(const std::string & onnx_file_path)
       int stride = s_dims.d[0];
       int num_weights = (dim_in.d[1] / groups) * dim_out.d[1] * k_dims.d[0] * k_dims.d[1];
       float gflops = (2 * num_weights) * (dim_in.d[3] / stride * dim_in.d[2] / stride / 1e9);
-      ;
       total_gflops += gflops;
       total_params += num_weights;
       std::cout << "L" << i << " [conv " << k_dims.d[0] << "x" << k_dims.d[1] << " (" << groups

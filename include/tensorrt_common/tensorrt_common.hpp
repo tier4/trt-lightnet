@@ -153,7 +153,7 @@ class TrtCommon  // NOLINT
 public:
   /**
    * @brief Construct TrtCommon.
-   * @param[in] mode_path ONNX model_path
+   * @param[in] model_path ONNX model_path
    * @param[in] precision precision for inference
    * @param[in] calibrator pointer for any type of INT8 calibrator
    * @param[in] batch_config configuration for batched execution
@@ -201,13 +201,30 @@ public:
    */
   void setup();
 
+  /// @brief Returns true once the engine and execution context are ready.
   bool isInitialized();
 
-  nvinfer1::DataType getBindingDataType(const int32_t index) const;  
+  /// @brief Returns the data type of the binding (I/O tensor) at @p index.
+  nvinfer1::DataType getBindingDataType(const int32_t index) const;
+  /// @brief Returns the (possibly dynamic) dimensions of the binding at @p index.
   nvinfer1::Dims getBindingDimensions(const int32_t index) const;
+  /// @brief Returns the name of the I/O tensor at @p index.
   std::string getIOTensorName(const int32_t index);
+  /// @brief Returns the number of bindings (I/O tensors) of the engine.
   int32_t getNbBindings();
+  /// @brief Sets the input shape for the binding at @p index; returns success.
   bool setBindingDimensions(const int32_t index, const nvinfer1::Dims & dimensions) const;
+  /**
+   * @brief Enqueues an inference on @p stream, abstracting over the TensorRT version.
+   *
+   * Uses enqueueV3 with per-tensor addresses on TRT 10+, and enqueueV2 otherwise.
+   * When per-layer profiling is enabled, the host-side latency is recorded.
+   *
+   * @param bindings Array of device pointers, one per binding.
+   * @param stream CUDA stream to enqueue the work on.
+   * @param input_consumed Optional event signalled when inputs are consumed (TRT < 10).
+   * @return true if the work was enqueued successfully.
+   */
   bool enqueueV2(void ** bindings, cudaStream_t stream, cudaEvent_t * input_consumed);
 
   /**
@@ -223,10 +240,13 @@ public:
 #endif
 
 
-  std::string dataType2String(nvinfer1::DataType dataType) const;  
+  /// @brief Returns a human-readable name for a TensorRT data type (e.g. "kFLOAT").
+  std::string dataType2String(nvinfer1::DataType dataType) const;
 
+  /// @brief Returns true if the binding at @p index is a network input.
   bool bindingIsInput(const int32_t index) const;
 
+  /// @brief Returns the list of tensor names marked as debug outputs.
   std::vector<std::string> getDebugTensorNames(void);
   
 private:

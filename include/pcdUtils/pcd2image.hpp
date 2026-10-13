@@ -11,10 +11,6 @@
 #include "CalibratedSensorParser.h"
 /**
  * Removes specified extensions from the given file path.
- *
- * @param filepath The input file path.
- * @param extensions A list of extensions to be removed.
- * @return The filename without the specified extensions.
  */
 extern std::string removeExtensions(const std::filesystem::path& filepath, const std::vector<std::string>& extensions);
 
@@ -82,18 +78,11 @@ namespace pcd2image {
 
     /**
      * Creates a 4x4 transformation matrix from the camera to the LiDAR coordinate system.
-     *
-     * @param cam_calib Camera calibration information.
-     * @return The transformation matrix (4x4).
      */
     Eigen::Matrix4f createCameraToLidarTransform(CalibratedSensorInfo cam_calib);
 
     /**
      * Loads a point cloud from a file.
-     *
-     * @param filename The path to the point cloud file.
-     * @param format The format of the point cloud data.
-     * @return A vector of 3D points.
      */
     std::vector<Point3D> loadPointCloud(const std::string& filename, PointCloudFormat format);
 
@@ -132,11 +121,6 @@ namespace pcd2image {
 
     /**
      * Generates a range image from LiDAR data using camera calibration.
-     *
-     * @param inputName The file path to the input point cloud.
-     * @param cam_calib Camera calibration information.
-     * @param max_distance The maximum distance for normalization.
-     * @return The generated range image as a cv::Mat.
      */
     cv::Mat makeRangeImageFromCalibration(
 					  std::string inputName,

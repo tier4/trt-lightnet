@@ -71,11 +71,27 @@ extern const unsigned char jet_colormap[256][3];
 extern const unsigned char magma_colormap[256][3];
 
 
+/**
+ * @brief Quantizes an angle to the lower edge of its bin.
+ *
+ * @param angle Angle to quantize (in degrees).
+ * @param bin Bin width in degrees.
+ * @return The angle truncated to the nearest lower multiple of @p bin.
+ */
 inline float quantize_angle(float angle, int bin)
 {
   return (int(angle/bin)) * bin;
 }
 
+/**
+ * @brief Computes the orientation of the vector from (x1,y1) to (x2,y2).
+ *
+ * @param x1 X coordinate of the start point.
+ * @param y1 Y coordinate of the start point.
+ * @param x2 X coordinate of the end point.
+ * @param y2 Y coordinate of the end point.
+ * @return The angle in degrees, in the range (-180, 180], measured from the +X axis.
+ */
 inline double
 calculateAngle(double x1, double y1, double x2, double y2) {
   double deltaY = y2 - y1;
@@ -89,8 +105,17 @@ calculateAngle(double x1, double y1, double x2, double y2) {
   return angleDegrees;
 }
 
+/**
+ * @brief Extracts the external contours (polygons) of a binary mask.
+ *
+ * Uses cv::CHAIN_APPROX_SIMPLE to compress horizontal, vertical, and diagonal
+ * segments, reducing the number of stored points.
+ *
+ * @param mask Single-channel binary mask to trace.
+ * @return The external contours found in @p mask.
+ */
 std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
-{  
+{
   std::vector<std::vector<cv::Point>> contours;  
   //cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
   // 🚀 メモリ効率の最適化
@@ -100,6 +125,14 @@ std::vector<std::vector<cv::Point>> get_polygons( const cv::Mat &mask)
   return contours;
 }
 
+/**
+ * @brief Returns true when polygon-statistics debug logging is enabled.
+ *
+ * Controlled by the COMET_DEBUG_POLYGON_STATS environment variable; accepted
+ * truthy values are "1", "true", "TRUE", "yes", and "YES".
+ *
+ * @return true if the debug logging flag is set to a truthy value.
+ */
 static bool should_log_polygon_stats()
 {
   const char * env = std::getenv("COMET_DEBUG_POLYGON_STATS");
@@ -110,6 +143,12 @@ static bool should_log_polygon_stats()
   return v == "1" || v == "true" || v == "TRUE" || v == "yes" || v == "YES";
 }
 
+/**
+ * @brief Returns the size, in bytes, of a single element of a TensorRT data type.
+ *
+ * @param dt TensorRT data type.
+ * @return Element size in bytes; defaults to 4 for unrecognized types.
+ */
 inline std::size_t get_dtype_size_bytes(nvinfer1::DataType dt)
 {
   switch (dt) {
@@ -126,6 +165,12 @@ inline std::size_t get_dtype_size_bytes(nvinfer1::DataType dt)
   }
 }
 
+/**
+ * @brief Serializes a JSON object to a file using 4-space indentation.
+ *
+ * @param j JSON object to write.
+ * @param filename Destination file path; an error is logged if it cannot be created.
+ */
 void write_json_with_order(const json& j, const std::string& filename) {
   std::ofstream file(filename);
   if (!file) {
@@ -316,9 +361,10 @@ namespace tensorrt_lightnet
    * @param inference_config Configuration struct containing inference-specific settings like precision,
    * calibration images, workspace size, and batch configuration.
    * @param build_config Struct containing build-specific settings for TensorRT including the calibration type and clip value.
+   * @param depth_format Depth map format such as "magma" or "grayscale".
    * @throws std::runtime_error If necessary calibration parameters are missing for INT8 precision or if
    * TensorRT engine initialization fails.
-   */  
+   */
   TrtLightnet::TrtLightnet(ModelConfig &model_config, InferenceConfig &inference_config, tensorrt_common::BuildConfig build_config, const std::string depth_format)
   {
     const std::string& model_path = model_config.model_path;
@@ -499,7 +545,7 @@ namespace tensorrt_lightnet
   }
 
   TrtLightnet::~TrtLightnet() {
-    // Cleanup if needed.
+    // Cleanup is handled by RAII members.
   }
   
   /**
@@ -1814,6 +1860,7 @@ namespace tensorrt_lightnet
    * @param im_w Image width of the original input.
    * @param im_h Image height of the original input.
    * @param calibdata Calibration data required for back projection.
+   * @param padding Padding applied around the projected BEV map.
    */
   void TrtLightnet::makeBackProjectionGpu(const int im_w, const int im_h, const Calibration calibdata, int padding)
   {
@@ -3570,14 +3617,14 @@ namespace tensorrt_lightnet
       poly_stats = &stats_storage;
     }
 
-    /**
-     * @brief Convert a binary mask to polygons and append to annotation list for class c.
+    /*
+     * Convert a binary mask to polygons and append to annotation list for class c.
      *
-     * @param mask_bin Binary mask at network output resolution (CV_8UC1)
-     * @param c        Class id
-     * @param scaleX   Scale factor from output width to original image width
-     * @param scaleY   Scale factor from output height to original image height
-     * @param out_ann  Accumulator: per-class list of json annotations
+     * mask_bin Binary mask at network output resolution (CV_8UC1)
+     * c        Class id
+     * scaleX   Scale factor from output width to original image width
+     * scaleY   Scale factor from output height to original image height
+     * out_ann  Accumulator: per-class list of json annotations
      */
       auto push_annotations_from_mask =
     [&](const cv::Mat& mask_bin, int c, double scaleX, double scaleY,
@@ -3827,4 +3874,3 @@ namespace tensorrt_lightnet
   }
   
 }  // namespace tensorrt_lightnet
-

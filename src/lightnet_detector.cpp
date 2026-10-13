@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <boost/filesystem.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -62,6 +63,14 @@ struct VisualizationConfig {
 };
 
 
+/**
+ * Concatenates two images side by side, scaling the second image so its height
+ * matches the first while preserving its aspect ratio.
+ *
+ * @param mat1 The left image; defines the output height.
+ * @param mat2 The right image; resized to mat1's height before concatenation.
+ * @return The horizontally concatenated image, or an empty Mat if either input is empty.
+ */
 cv::Mat concatHorizontal(const cv::Mat& mat1, const cv::Mat& mat2) {
   if (mat1.empty() || mat2.empty()) {
     std::cerr << "Input matrices should not be empty!" << std::endl;
@@ -79,6 +88,14 @@ cv::Mat concatHorizontal(const cv::Mat& mat1, const cv::Mat& mat2) {
   return concatenated;
 }
 
+/**
+ * Concatenates two images side by side without rescaling, vertically centring
+ * each within a common (zero-padded) height equal to the taller of the two.
+ *
+ * @param mat1 The left image.
+ * @param mat2 The right image.
+ * @return The horizontally concatenated, vertically padded image, or an empty Mat if either input is empty.
+ */
 cv::Mat concatHorizontalWithPadding(const cv::Mat& mat1, const cv::Mat& mat2) {
   if (mat1.empty() || mat2.empty()) {
     std::cerr << "Input matrices should not be empty!" << std::endl;
@@ -147,7 +164,70 @@ std::vector<cv::Vec3b> getArgmaxToBgr(const std::vector<tensorrt_lightnet::Color
     argmax2bgr.emplace_back(cv::Vec3b(map.color[2], map.color[1], map.color[0]));
   }
   return argmax2bgr;
-}  
+}
+
+/**
+ * Builds the camera calibration parameters used for back-projection and BEV
+ * generation from the geometry of the current image.
+ *
+ * The principal point (u0, v0) is assumed to be the image centre, while the
+ * focal lengths and maximum projection distance are taken from the global
+ * configuration (command-line flags).
+ *
+ * @param image The image whose dimensions define the principal point.
+ * @return A fully populated Calibration structure.
+ */
+static Calibration makeCalibrationFromImage(const cv::Mat &image)
+{
+  return Calibration{
+    .u0 = static_cast<float>(image.cols / 2.0),
+    .v0 = static_cast<float>(image.rows / 2.0),
+    .fx = get_fx(),
+    .fy = get_fy(),
+    .max_distance = get_max_distance(),
+  };
+}
+
+/**
+ * Builds an output directory path by optionally appending a sensor name and a
+ * camera name to a base path. Empty components are skipped so that the layout
+ * matches the dataset structure (e.g. `<base>/<sensor>/<cam>`).
+ *
+ * @param base The base output directory.
+ * @param sensor_name Sensor name to append, or empty to skip.
+ * @param cam_name Camera name to append, or empty to skip.
+ * @return The composed filesystem path.
+ */
+static fs::path buildOutputPath(const std::string &base, const std::string &sensor_name, const std::string &cam_name)
+{
+  fs::path dstPath(base);
+  if (!sensor_name.empty()) {
+    dstPath /= sensor_name;
+  }
+  if (!cam_name.empty()) {
+    dstPath /= cam_name;
+  }
+  return dstPath;
+}
+
+/**
+ * Down-scales an image to at most 1920x1280 for on-screen display, preserving
+ * the original when it is already within bounds. The image is modified in-place.
+ *
+ * @param image The image to resize for display.
+ */
+static void resizeForDisplay(cv::Mat &image)
+{
+  if (image.rows > 1280 && image.cols > 1920) {
+    cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
+  }
+}
+
+static bool useSubnetGpuPreprocess()
+{
+  const char * env = std::getenv("SUBNET_GPU_PREPROCESS");
+  return env != nullptr && env[0] == '1';
+}
 
 /**
  * Performs fast face swapping on the input image using TensorRT LightNet and FaceSwapper models.
@@ -196,9 +276,9 @@ void inferFastFaceSwapper(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
  * 
  * @param trt_lightnet A shared pointer to an initialized TensorRT LightNet model.
  * @param image The image to process.
- * @param colormap The color mapping for class labels used in bounding box visualization.
- * @param names The names of the classes corresponding to the detection outputs.
- * @param argmax2bgr A vector of BGR colors used for drawing segmentation masks.
+ * @param visualization_config Visualization configuration controlling drawing and output options.
+ * @param fswp_model A shared pointer to a FaceSwapper model used for optional face anonymization.
+ * @param target A vector of target class names to process.
  */
 void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, VisualizationConfig visualization_config, std::shared_ptr<fswp::FaceSwapper> fswp_model, std::vector<std::string> &target)
 {
@@ -239,13 +319,7 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
 
       trt_lightnet->makeTopIndex();
       
-      Calibration calibdata = {
-	.u0 = (float)(image.cols/2.0),
-	.v0 = (float)(image.rows/2.0),
-	.fx = get_fx(),
-	.fy = get_fy(),
-	.max_distance = get_max_distance(),
-      };
+      Calibration calibdata = makeCalibrationFromImage(image);
       if (get_cuda_flg()) {
 	if (get_sparse_depth_flg()) {
 	  trt_lightnet->makeBackProjectionGpuWithoutDensify(image.cols, image.rows, calibdata);
@@ -279,10 +353,11 @@ void inferLightnet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet,
  * Infers a subnet using a given Lightnet model and refines detections based on target classes.
  * 
  * @param trt_lightnet A shared pointer to the primary TensorRT Lightnet model.
- * @param subnet_trt_lightnet A shared pointer to the secondary TensorRT Lightnet model for processing subnets.
+ * @param subnet_trt_lightnets A vector of shared pointers to the secondary TensorRT Lightnet models for processing subnets.
  * @param image The image in which detection is performed.
  * @param names A vector of class names corresponding to class IDs.
  * @param target A vector of target class names to filter the detections.
+ * @param numWorks The number of parallel workers used to process the detections.
  */
 void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std::vector<std::shared_ptr<tensorrt_lightnet::TrtLightnet>> subnet_trt_lightnets, cv::Mat &image, std::vector<std::string> &names, std::vector<std::string> &target, const int numWorks)
 {
@@ -291,9 +366,42 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
   int num = (int)bbox.size();
   std::vector<std::vector<tensorrt_lightnet::BBoxInfo>> tmpBbox;
   tmpBbox.resize(numWorks);
+  const bool subnet_gpu_preprocess = useSubnetGpuPreprocess();
 #pragma omp parallel for  
   for (int p = 0; p < numWorks; p++) {
     std::vector<tensorrt_lightnet::BBoxInfo> subnetBbox;
+    const int maxBatchSize = std::max(1, subnet_trt_lightnets[p]->getBatchSize());
+    std::vector<cv::Mat> cropped_batch;
+    std::vector<tensorrt_lightnet::BBoxInfo> parent_batch;
+    cropped_batch.reserve(maxBatchSize);
+    parent_batch.reserve(maxBatchSize);
+
+    auto flush_batch = [&]() {
+      if (cropped_batch.empty()) {
+        return;
+      }
+      if (subnet_gpu_preprocess) {
+        subnet_trt_lightnets[p]->preprocess_gpu_batch(cropped_batch);
+      } else {
+        subnet_trt_lightnets[p]->preprocess(cropped_batch);
+      }
+      subnet_trt_lightnets[p]->doInference(static_cast<int>(cropped_batch.size()));
+      for (int batchIndex = 0; batchIndex < static_cast<int>(cropped_batch.size()); batchIndex++) {
+        const auto & parent = parent_batch[batchIndex];
+        auto bb = subnet_trt_lightnets[p]->getBbox(
+          cropped_batch[batchIndex].rows, cropped_batch[batchIndex].cols, batchIndex);
+        for (auto & box : bb) {
+          box.box.x1 += parent.box.x1;
+          box.box.y1 += parent.box.y1;
+          box.box.x2 += parent.box.x1;
+          box.box.y2 += parent.box.y1;
+        }
+        subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
+      }
+      cropped_batch.clear();
+      parent_batch.clear();
+    };
+
     for (int i = (p) * num / numWorks; i < (p+1) * num / numWorks; i++) {
       auto b = bbox[i];
       int flg = false;
@@ -307,18 +415,13 @@ void inferSubnetLightnets(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_li
       }
       cv::Rect roi(b.box.x1, b.box.y1, b.box.x2-b.box.x1, b.box.y2-b.box.y1);
       cv::Mat cropped = (image)(roi);
-      subnet_trt_lightnets[p]->preprocess({cropped});
-      subnet_trt_lightnets[p]->doInference();
-      subnet_trt_lightnets[p]->makeBbox(cropped.rows, cropped.cols);    
-      auto bb = subnet_trt_lightnets[p]->getBbox();
-      for (int j = 0; j < (int)bb.size(); j++) {
-	bb[j].box.x1 += b.box.x1;
-	bb[j].box.y1 += b.box.y1;
-	bb[j].box.x2 += b.box.x1;
-	bb[j].box.y2 += b.box.y1;
-      }      
-      subnetBbox.insert(subnetBbox.end(), bb.begin(), bb.end());
+      cropped_batch.push_back(cropped);
+      parent_batch.push_back(b);
+      if (static_cast<int>(cropped_batch.size()) >= maxBatchSize) {
+        flush_batch();
+      }
     }
+    flush_batch();
     tmpBbox[p] = subnetBbox;
   }
   
@@ -414,13 +517,7 @@ void inferKeypointLightnets(
       subnetKeypoint.insert(subnetKeypoint.end(), keypoint.begin(), keypoint.end());
     }
   }
-  Calibration calibdata = {
-    .u0 = (float)(image.cols/2.0),
-    .v0 = (float)(image.rows/2.0),
-    .fx = get_fx(),
-    .fy = get_fy(),
-    .max_distance = get_max_distance(),
-  };
+  Calibration calibdata = makeCalibrationFromImage(image);
   trt_lightnet->addBBoxIntoBevmap(image.cols, image.rows, calibdata, names);    
 }
 
@@ -431,6 +528,7 @@ void inferKeypointLightnets(
  * @param image The image on which detections, masks, and depth maps will be overlaid.
  * @param colormap A vector of vectors containing RGB values for coloring each class.
  * @param names A vector of class names used for labeling the detections.
+ * @param target A vector of target class names to draw.
  */
 void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<std::vector<int>> &colormap, std::vector<std::string> &names, std::vector<std::string> &target)
 {
@@ -472,13 +570,7 @@ void drawLightNet(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, 
 
   if (target.size() > 0 ) {
     if (get_plot_circle_flg()) {
-      Calibration calibdata = {
-	.u0 = (float)(image.cols/2.0),
-	.v0 = (float)(image.rows/2.0),
-	.fx = get_fx(),
-	.fy = get_fy(),
-	.max_distance = get_max_distance(),
-      };
+      Calibration calibdata = makeCalibrationFromImage(image);
       trt_lightnet->plotCircleIntoBevmap(image.cols, image.rows, calibdata, names, target);
     }
   }  
@@ -606,7 +698,6 @@ writePredictions(std::string save_path, std::string filename, std::vector<std::s
  *
  * @param save_path The path to the directory where the text file will be saved.
  * @param filename The original filename of the image; used to construct the output text filename.
- * @param names A vector of strings representing class names corresponding to class IDs.
  * @param values A vector of floating point values.
  */
 void
@@ -695,6 +786,20 @@ void writeCrossTaskInconsistency(std::shared_ptr<tensorrt_lightnet::TrtLightnet>
 }
 
 
+/**
+ * Writes the segmentation result for one frame as a JSON annotation file.
+ *
+ * The output is placed under `<json_path>/json/` and the file name is derived
+ * from the input image name by replacing its image/point-cloud extension
+ * (.jpg, .png, .pcd.bin) with .json.
+ *
+ * @param trt_lightnet Shared pointer to the TrtLightnet instance holding the segmentation result.
+ * @param image The image the inference was run on (its size is recorded in the annotation).
+ * @param colormap The segmentation colormap mapping class indices to colours/labels.
+ * @param names Class names corresponding to detection class IDs.
+ * @param json_path Base directory under which the JSON annotation is written.
+ * @param filename Original input file name, used to derive the JSON file name.
+ */
 void write_annotation_json(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, cv::Mat &image, std::vector<tensorrt_lightnet::Colormap> colormap, std::vector<std::string> &names, std::string json_path, std::string filename)
 {
   fs::path p = fs::path(json_path) / "json";
@@ -937,6 +1042,7 @@ savePrediction(std::shared_ptr<tensorrt_lightnet::TrtLightnet> trt_lightnet, std
  * @param trt_lightnet Pointer to the main TensorRT LightNet model.
  * @param subnet_trt_lightnets Vector of pointers to subnet TensorRT LightNet models.
  * @param keypoint_trt_lightnets Vector of pointers to keypoint TensorRT LightNet models.
+ * @param fswp_model Shared pointer to a FaceSwapper model used for optional face anonymization.
  * @param image Input image for processing.
  * @param visualization_config Configuration for visualization of the main LightNet results.
  * @param subnet_visualization_config Configuration for visualization of subnet LightNet results.
@@ -1011,13 +1117,7 @@ void inferLightNetPipeline(
   if (get_calc_entropy_flg()) {
     trt_lightnet->calcEntropyFromSoftmax();
     if (path_config.save_path != "not-specified") {
-      fs::path dstPath(path_config.save_path);
-      if (!sensor_name.empty()) {
-	dstPath /= sensor_name;
-      }
-      if (!cam_name.empty()) {
-	dstPath /= cam_name;
-      }
+      fs::path dstPath = buildOutputPath(path_config.save_path, sensor_name, cam_name);
       writeEntropy(trt_lightnet, dstPath.string(), filename);
     }
   }
@@ -1026,19 +1126,12 @@ void inferLightNetPipeline(
   if (get_calc_cross_task_inconsistency_flg()) {
     trt_lightnet->calcCrossTaskInconsistency(image.cols, image.rows, visualization_config.seg_colormap);
     if (path_config.save_path != "not-specified") {
-      fs::path dstPath(path_config.save_path);
-      if (!sensor_name.empty()) {
-	dstPath /= sensor_name;
-      }
-      if (!cam_name.empty()) {
-	dstPath /= cam_name;
-      }
+      fs::path dstPath = buildOutputPath(path_config.save_path, sensor_name, cam_name);
       writeCrossTaskInconsistency(trt_lightnet, dstPath.string(), filename);
     }
   }
  
   // Draw visualizations if not suppressed
-  //if (1) {
   if (!visualization_config.dont_show) {
     if (profile_verbose()) {
       start = std::chrono::high_resolution_clock::now();
@@ -1056,13 +1149,7 @@ void inferLightNetPipeline(
 
   // Save results if the save flag is enabled
   if (path_config.flg_save) {
-    fs::path dstPath(path_config.save_path);
-    if (!sensor_name.empty()) {
-      dstPath /= sensor_name;
-    }
-    if (!cam_name.empty()) {
-      dstPath /= cam_name;
-    }
+    fs::path dstPath = buildOutputPath(path_config.save_path, sensor_name, cam_name);
     saveLightNet(trt_lightnet, image, visualization_config.colormap, visualization_config.names, dstPath.string(), filename);
   }
 
@@ -1077,6 +1164,25 @@ void inferLightNetPipeline(
   }
 }
 
+/**
+ * @brief Program entry point for the trt-lightnet inference application.
+ *
+ * Parses command-line flags, builds the main TensorRT LightNet engine together
+ * with any optional subnet, keypoint and face-swapper models, then drives the
+ * inference pipeline over one of three mutually exclusive input sources,
+ * selected by the provided flags (in priority order):
+ *   1. a T4 dataset directory (--t4dataset_directory),
+ *   2. an image directory (--d / directory),
+ *   3. a video file or live camera (--v / --cam).
+ *
+ * Each frame is passed through inferLightNetPipeline() for inference,
+ * visualization and optional saving. Profiling results are printed at the end
+ * when profiling is enabled.
+ *
+ * @param argc Argument count.
+ * @param argv Argument vector (gflags-style command-line flags).
+ * @return 0 on success.
+ */
 int
 main(int argc, char* argv[])
 {
@@ -1181,7 +1287,7 @@ main(int argc, char* argv[])
 	//use multiple dlas [DLA0 and DLA1]
 	build_config.dla_core_id = (int)w/2;
       }
-      inference_config.batch_config = {1, get_batch_size()/2, get_batch_size()};      
+      inference_config.batch_config = {1, std::max(1, get_batch_size()/2), get_batch_size()};
       subnet_trt_lightnets.push_back(
 				     std::make_shared<tensorrt_lightnet::TrtLightnet>(subnet_model_config, inference_config, build_config, get_depth_format()));
     }
@@ -1252,9 +1358,7 @@ main(int argc, char* argv[])
 	  inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), sensor_name, cam_name);
 	  
 	  if (!visualization_config.dont_show) {
-	    if (image.rows > 1280 && image.cols > 1920) {
-	      cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
-	    }
+	    resizeForDisplay(image);
 	    cv::imshow("inference", image);	
 	    cv::waitKey(0);
 	  }
@@ -1271,9 +1375,7 @@ main(int argc, char* argv[])
       cv::Mat image = cv::imread(file.path(), cv::IMREAD_COLOR);
       inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, file.path().filename(), "", "");
       if (!visualization_config.dont_show) {
-	if (image.rows > 1280 && image.cols > 1920) {
-	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
-	}
+	resizeForDisplay(image);
 	cv::imshow("inference", image);	
 	cv::waitKey(0);
       }
@@ -1303,9 +1405,7 @@ main(int argc, char* argv[])
       inferLightNetPipeline(trt_lightnet, subnet_trt_lightnets, keypoint_trt_lightnets, fswp_model, image, visualization_config, subnet_visualization_config, target, keypoint_target, bluron, path_config, name, "", "");
 
       if (!visualization_config.dont_show) {
-	if (image.rows > 1280 && image.cols > 1920) {
-	  cv::resize(image, image, cv::Size(1920, 1280), 0, 0, cv::INTER_LINEAR);
-	}
+	resizeForDisplay(image);
 	cv::imshow("inference", image);	
 	if (cv::waitKey(1) == 'q') {
 	  break;
