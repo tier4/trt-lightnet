@@ -261,6 +261,29 @@ Then reference it in the config:
 --calib=Entropy   # Entropy | MinMax | Legacy | Percentile
 ```
 
+### INT8 with a Q/DQ ONNX (QAT, Blackwell)
+
+If the ONNX already contains `QuantizeLinear` / `DequantizeLinear` nodes (explicit quantization,
+e.g. a model trained with quantization-aware training), `--precision int8` builds a **strongly
+typed** network: every layer runs in the precision written in the ONNX, the quantization scales
+come from the Q/DQ nodes, and no calibration images are needed. The engine is cached as
+`<model>.QDQ-int8-batch<N>.engine`.
+
+```bash
+./trt-lightnet --flagfile config.txt --precision int8      # Q/DQ is detected automatically
+```
+
+This is the only INT8 path that works on **Blackwell GPUs with TensorRT 10.16**: there the
+calibrator path (`kINT8 | kFP16`) fails with `Could not find any implementation for node
+{ForeignNode[...]}`, and an INT8 convolution with FP16 output loses a lot of accuracy. A deploy
+ONNX therefore keeps the output of each INT8 convolution in FP32 and casts it to FP16 right after
+it; everything that is not INT8 runs in FP16. Such an ONNX is produced from a darknet cfg + weights
+by `lightnet-torch/tools/deploy_onnx.py` (`--fp16_last` keeps all prediction layers in FP16).
+
+Q/DQ engines are built for the local GPU (no `kVERSION_COMPATIBLE` / Ampere+ hardware
+compatibility), which is ~30% faster on Blackwell; set `LIGHTNET_HW_COMPAT=1` to build a
+portable engine instead.
+
 ---
 
 ## Command-Line Reference
@@ -294,7 +317,7 @@ All flags can be set in a config file (`--flagfile`) or passed directly on the c
 | Flag | Type | Description |
 |---|---|---|
 | `--first` | bool | Skip INT8 quantization on the first layer (recommended: `true`) |
-| `--last` | bool | Skip INT8 quantization on the last layer |
+| `--last` | bool | Skip INT8 quantization on the prediction layers (every Conv/MatMul that feeds a network output) |
 | `--sparse` | bool | Enable 2:4 structured sparsity (Ampere+ GPU required) |
 | `--dla` | int | DLA core index — `0` or `1`; **Xavier / Orin only** |
 
@@ -451,7 +474,7 @@ The first convolutional layer of a CNN processes raw pixel values and is highly 
 ./trt-lightnet --flagfile config.txt --precision int8 --first true
 ```
 
-Setting `--first true` keeps the first layer in FP32 (or FP16) while quantizing the rest to INT8, giving the best accuracy–speed tradeoff. `--last true` does the same for the final output layer.
+Setting `--first true` keeps the first layer in FP32 (or FP16) while quantizing the rest to INT8, giving the best accuracy–speed tradeoff. `--last true` does the same for the prediction layers: every Conv / MatMul whose output reaches a network output without passing another Conv / MatMul (e.g. all 30 1x1 prediction convs of a 3-scale decoupled head, not only the last one). For a Q/DQ ONNX these flags are ignored; the precision is decided when the ONNX is made.
 
 ---
 

@@ -17,7 +17,12 @@
 #include <NvInferPlugin.h>
 #include <dlfcn.h>
 
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
+#include <vector>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -98,6 +103,45 @@ bool contain(const std::string & s, const T & v)
 {
   return s.find(v) != std::string::npos;
 }
+
+// Conv / MatMul layers whose outputs reach the network outputs without passing through
+// another Conv / MatMul (i.e. the prediction layers of every detection head).
+std::vector<nvinfer1::ILayer *> find_output_layers(nvinfer1::INetworkDefinition * network)
+{
+  std::map<const nvinfer1::ITensor *, nvinfer1::ILayer *> producer;
+  for (int i = 0; i < network->getNbLayers(); i++) {
+    nvinfer1::ILayer * layer = network->getLayer(i);
+    for (int k = 0; k < layer->getNbOutputs(); k++) {
+      producer[layer->getOutput(k)] = layer;
+    }
+  }
+  std::vector<nvinfer1::ILayer *> found;
+  std::set<nvinfer1::ILayer *> visited;
+  std::vector<const nvinfer1::ITensor *> stack;
+  for (int i = 0; i < network->getNbOutputs(); i++) {
+    stack.push_back(network->getOutput(i));
+  }
+  while (!stack.empty()) {
+    const nvinfer1::ITensor * t = stack.back();
+    stack.pop_back();
+    auto it = producer.find(t);
+    if (it == producer.end() || !visited.insert(it->second).second) {
+      continue;
+    }
+    nvinfer1::ILayer * layer = it->second;
+    auto type = layer->getType();
+    if (type == nvinfer1::LayerType::kCONVOLUTION || type == nvinfer1::LayerType::kMATRIX_MULTIPLY) {
+      found.push_back(layer);
+      continue;
+    }
+    for (int k = 0; k < layer->getNbInputs(); k++) {
+      if (layer->getInput(k)) {
+        stack.push_back(layer->getInput(k));
+      }
+    }
+  }
+  return found;
+}
 }  // anonymous namespace
 
 namespace tensorrt_common
@@ -132,6 +176,20 @@ nvinfer1::Dims get_input_dims(const std::string & onnx_file_path)
 
   const auto input = network->getInput(0);
   return input->getDimensions();
+}
+
+bool onnx_has_qdq(const std::string & onnx_file_path)
+{
+  if (fs::path(onnx_file_path).extension() != ".onnx") {
+    return false;
+  }
+  std::ifstream ifs(onnx_file_path, std::ios::binary);
+  if (!ifs) {
+    return false;
+  }
+  // op_type is stored as a plain string in the protobuf, so a byte search is enough
+  const std::string data((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  return data.find("QuantizeLinear") != std::string::npos;
 }
 
 bool is_valid_precision_string(const std::string & precision)
@@ -212,7 +270,11 @@ void TrtCommon::setup()
     fs::path cache_engine_path{model_file_path_};
     std::string ext;
     std::string calib_name = "";
-    if (precision_ == "int8") {
+    const bool qdq = precision_ == "int8" && onnx_has_qdq(model_file_path_);
+    if (qdq) {
+      // explicit quantization: precision of every layer is defined by the ONNX itself
+      calib_name = "QDQ-";
+    } else if (precision_ == "int8") {
       if (build_config_->calib_type_str == "Entropy") {
         calib_name = "EntropyV2-";
       } else if (
@@ -225,7 +287,7 @@ void TrtCommon::setup()
     }
     if (build_config_->dla_core_id != -1) {
       ext = "DLA" + std::to_string(build_config_->dla_core_id) + "-" + calib_name + precision_;
-      if (precision_ == "int8") {
+      if (precision_ == "int8" && !qdq) {
 	if (build_config_->quantize_first_layer) {
 	  ext += "-firstFP16";
 	}
@@ -236,7 +298,7 @@ void TrtCommon::setup()
       ext += "-batch" + std::to_string(batch_config_[0]) + ".engine";
     } else {
       ext = calib_name + precision_;
-      if (precision_ == "int8") {
+      if (precision_ == "int8" && !qdq) {
 	if (build_config_->quantize_first_layer) {
 	  ext += "-firstFP16";
 	}
@@ -263,8 +325,13 @@ void TrtCommon::setup()
     }      
     if (!is_loadable_engine) {
       logger_.log(nvinfer1::ILogger::Severity::kINFO, "Start build engine");
-      buildEngineFromOnnx(model_file_path_, cache_engine_path);
+      const bool built = buildEngineFromOnnx(model_file_path_, cache_engine_path);
       logger_.log(nvinfer1::ILogger::Severity::kINFO, "End build engine");
+      if (!built || !engine_) {
+        logger_.log(nvinfer1::ILogger::Severity::kERROR, "Failed to build engine");
+        is_initialized_ = false;
+        return;
+      }
     }
     engine_path = cache_engine_path;
   } else {
@@ -438,11 +505,29 @@ bool TrtCommon::buildEngineFromOnnx(
     return false;
   }
 
-  const auto explicitBatch =
+  // Q/DQ (explicitly quantized) ONNX: build a strongly typed network. Every tensor keeps the
+  // type written in the ONNX (INT8 via Q/DQ, FP16/FP32 elsewhere); no calibrator, no precision
+  // flags. This is also the only INT8 path that works on Blackwell with TensorRT 10.16, where
+  // implicit INT8 (calibrator + kINT8|kFP16) fails in the Myelin backend.
+  const bool qdq = precision_ == "int8" && onnx_has_qdq(onnx_file_path);
+  uint32_t network_flags =
     1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+#if TRT_VER_NUM >= 10000
+  if (qdq) {
+    network_flags |=
+      1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED);
+    std::cout << "### Q/DQ ONNX detected: building a strongly typed network (no calibration) ###"
+              << std::endl;
+  }
+#else
+  if (qdq) {
+    std::cout << "### Q/DQ ONNX detected: TensorRT >= 10 is required for strongly typed build ###"
+              << std::endl;
+  }
+#endif
 
   auto network =
-    TrtUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
+    TrtUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(network_flags));
   if (!network) {
     logger_.log(nvinfer1::ILogger::Severity::kERROR, "Fail to create network");
     return false;
@@ -476,7 +561,7 @@ bool TrtCommon::buildEngineFromOnnx(
     config->setFlag(nvinfer1::BuilderFlag::kSPARSE_WEIGHTS);
   } 
   
-  if (precision_ == "fp16" || precision_ == "int8") {
+  if ((precision_ == "fp16" || precision_ == "int8") && !qdq) {
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
   }
 #if TRT_VER_NUM >= 8400  
@@ -496,7 +581,7 @@ bool TrtCommon::buildEngineFromOnnx(
   bool first = build_config_->quantize_first_layer;
   bool last = build_config_->quantize_last_layer;
   // Partial Quantization
-  if (precision_ == "int8") {
+  if (precision_ == "int8" && !qdq) {
     network->getInput(0)->setDynamicRange(0, 1.0);    
     for (int i = 0; i < num; i++) {
       nvinfer1::ILayer * layer = network->getLayer(i);
@@ -509,36 +594,18 @@ bool TrtCommon::buildEngineFromOnnx(
         out->setDynamicRange(0.0, build_config_->clip_value);
       }
 
-      if (layer_type == nvinfer1::LayerType::kCONVOLUTION) {
-        if (first) {
-          layer->setPrecision(nvinfer1::DataType::kHALF);
-          std::cout << "Set kHALF in " << name << std::endl;
-          first = false;
-        }
-        if (last) {
-          // cspell: ignore preds
-          if (
-            contain(name, "reg_preds") || contain(name, "cls_preds") ||
-            contain(name, "obj_preds")) {
-            layer->setPrecision(nvinfer1::DataType::kHALF);
-            std::cout << "Set kHALF in " << name << std::endl;
-          }
-          for (int i = num - 1; i >= 0; i--) {
-            nvinfer1::ILayer * layer = network->getLayer(i);
-            auto layer_type = layer->getType();
-            std::string name = layer->getName();
-            if (layer_type == nvinfer1::LayerType::kCONVOLUTION) {
-              layer->setPrecision(nvinfer1::DataType::kHALF);
-              std::cout << "Set kHALF in " << name << std::endl;
-              break;
-            }
-            if (layer_type == nvinfer1::LayerType::kMATRIX_MULTIPLY) {
-              layer->setPrecision(nvinfer1::DataType::kHALF);
-              std::cout << "Set kHALF in " << name << std::endl;
-              break;
-            }
-          }
-        }
+      if (layer_type == nvinfer1::LayerType::kCONVOLUTION && first) {
+        layer->setPrecision(nvinfer1::DataType::kHALF);
+        std::cout << "Set kHALF in " << name << std::endl;
+        first = false;
+      }
+    }
+    if (last) {
+      // every prediction layer of every head (e.g. 30 1x1 convs for a decoupled 3-scale head),
+      // not only the last conv in the layer list
+      for (nvinfer1::ILayer * layer : find_output_layers(network.get())) {
+        layer->setPrecision(nvinfer1::DataType::kHALF);
+        std::cout << "Set kHALF in " << layer->getName() << std::endl;
       }
     }
   }
@@ -597,7 +664,7 @@ bool TrtCommon::buildEngineFromOnnx(
     }
     config->addOptimizationProfile(opt_prof);
   }
-  if (precision_ == "int8" && calibrator_) {
+  if (precision_ == "int8" && calibrator_ && !qdq) {
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
 #if TRT_VER_NUM >= 8200    
     config->setFlag(nvinfer1::BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
@@ -635,7 +702,11 @@ bool TrtCommon::buildEngineFromOnnx(
   }
 
 #if TRT_VER_NUM >= 8600  
-  if (isAmperePlus) {
+  // Hardware/version compatible engines restrict kernel selection: for a Q/DQ INT8 engine on
+  // Blackwell this costs ~30% latency (6.2 ms -> 8.1 ms), so Q/DQ engines are built for the
+  // local GPU unless LIGHTNET_HW_COMPAT=1 is set.
+  const bool hw_compat = !qdq || std::getenv("LIGHTNET_HW_COMPAT") != nullptr;
+  if (isAmperePlus && hw_compat) {
     config->setFlag(nvinfer1::BuilderFlag::kVERSION_COMPATIBLE);
     config->setHardwareCompatibilityLevel(nvinfer1::HardwareCompatibilityLevel::kAMPERE_PLUS);
   } 

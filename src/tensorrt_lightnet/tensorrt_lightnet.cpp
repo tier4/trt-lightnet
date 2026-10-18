@@ -338,7 +338,8 @@ namespace tensorrt_lightnet
     batch_size_ = batch_config[2];
     multitask_ = 0;
 
-    if (precision == "int8") {
+    // Q/DQ ONNX (QAT / offline PTQ) carries its own quantization scales: no calibrator
+    if (precision == "int8" && !tensorrt_common::onnx_has_qdq(model_path)) {
       if (build_config.clip_value <= 0.0 && calibration_image_list_path.empty()) {
 	throw std::runtime_error(
 				 "For INT8 precision, calibration_image_list_path must be provided if clip_value is not set.");

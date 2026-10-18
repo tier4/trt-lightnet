@@ -121,6 +121,13 @@ struct BuildConfig
   
 nvinfer1::Dims get_input_dims(const std::string & onnx_file_path);
 
+/**
+ * @brief Returns true if the ONNX model contains QuantizeLinear/DequantizeLinear nodes
+ *        (explicit quantization, e.g. QAT or offline PTQ). Such a model is built as a
+ *        strongly typed network: INT8 comes from the Q/DQ nodes, no calibration is needed.
+ */
+bool onnx_has_qdq(const std::string & onnx_file_path);
+
 const std::array<std::string, 3> valid_precisions = {"fp32", "fp16", "int8"};
 bool is_valid_precision_string(const std::string & precision);
 
