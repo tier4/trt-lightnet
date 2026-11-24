@@ -431,6 +431,9 @@ void addWeightedGpu(unsigned char *output, unsigned char *src1,  unsigned char *
 }
 
 
+// Per-class entropy contribution -p_c * ln(p_c) for each pixel (CHW layout).
+// Summing over c gives the pixel's Shannon entropy; the per-class terms are kept so that
+// calcEntropyFromSoftmax can report per-class averages.
 __global__ void computeEntropyMapKernel(const float* d_input, float* d_entropy, int chan, int H, int W) {
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -438,37 +441,39 @@ __global__ void computeEntropyMapKernel(const float* d_input, float* d_entropy, 
   if (x >= W || y >= H) return;
 
   int offset = y * W + x;
-  float entropy = 0.0f;
   for (int c = 0; c < chan; ++c) {
     float val = d_input[c * H * W + offset];
-    if (val > 1e-6) {
-      entropy = -val * logf(val);
-    }
-    d_entropy[c * H * W + offset] = entropy;
+    // p * ln(p) -> 0 as p -> 0; reset per class so a class with p ~ 0 does not inherit the previous class's value
+    d_entropy[c * H * W + offset] = (val > 1e-6f) ? -val * logf(val) : 0.0f;
   }
 }
 
 void computeEntropyMapGpu(const float* buf, float* entropy_maps,
 			 int chan, int height, int width, cudaStream_t stream)
 {
-  dim3 block(8, 8, 4);
-  dim3 grid((width + 7)/8, (height + 7)/8, (chan + 3)/4);
+  dim3 block(16, 16);
+  dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
   computeEntropyMapKernel<<<grid, block, 0, stream>>>(buf, entropy_maps,
-								  chan, height, width);  
+								  chan, height, width);
 }
 
+// Visualization value per pixel: Shannon entropy H = sum_c -p_c * ln(p_c), normalized by its
+// maximum ln(chan) (uniform distribution) so that the full 0-255 range / colormap is used:
+// 0 = confident (one class has p = 1), 255 = all classes equally likely.
+// (The per-class term -p * ln(p) itself peaks at 1/e ~= 0.368, so taking its max over classes
+// only reached ~94/255 and never used the warm end of the colormap.)
 __global__ void generatePeakEntropyMapKernel(const float* d_entropy, unsigned char* d_peakEntropy, int chan, int H, int W) {
   int x = blockIdx.x * blockDim.x + threadIdx.x;
   int y = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (x < W && y < H) {
-    float max_val = 0.0f;
+    float sum = 0.0f;
     for (int c = 0; c < chan; ++c) {
-      int idx = c * H * W + y * W + x;
-      max_val = fmaxf(max_val, d_entropy[idx]);
+      sum += d_entropy[c * H * W + y * W + x];
     }
-    int vis_idx = y * W + x;
-    d_peakEntropy[vis_idx] = max(d_peakEntropy[vis_idx], (unsigned char)(255 * max_val));
+    float norm = (chan > 1) ? sum / logf((float)chan) : 0.0f;
+    norm = fminf(fmaxf(norm, 0.0f), 1.0f);
+    d_peakEntropy[y * W + x] = (unsigned char)(255.0f * norm + 0.5f);
   }
 }
 
