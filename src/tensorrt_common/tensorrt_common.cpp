@@ -520,8 +520,10 @@ bool TrtCommon::buildEngineFromOnnx(
               << std::endl;
   }
 #else
+  // TensorRT < 10 has no strongly typed networks: build with kINT8 | kFP16 instead (explicit
+  // quantization). INT8 still comes only from the Q/DQ nodes; layers outside them run in FP16.
   if (qdq) {
-    std::cout << "### Q/DQ ONNX detected: TensorRT >= 10 is required for strongly typed build ###"
+    std::cout << "### Q/DQ ONNX detected: building with kINT8 | kFP16 (no calibration) ###"
               << std::endl;
   }
 #endif
@@ -564,6 +566,12 @@ bool TrtCommon::buildEngineFromOnnx(
   if ((precision_ == "fp16" || precision_ == "int8") && !qdq) {
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
   }
+#if TRT_VER_NUM < 10000
+  if (qdq) {
+    config->setFlag(nvinfer1::BuilderFlag::kINT8);
+    config->setFlag(nvinfer1::BuilderFlag::kFP16);
+  }
+#endif
 #if TRT_VER_NUM >= 8400  
   config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, max_workspace_size_);
 #else

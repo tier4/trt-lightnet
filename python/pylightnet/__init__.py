@@ -1300,6 +1300,9 @@ def create_lightnet_from_config(config_dict):
         # Parse subnet like TLR and anonymizer
         subnet_model_config = parse_subnet_model_config(config_dict)
         subnet_inference_config = parse_inference_config(config_dict)
+        if "subnet_precision" in config_dict:
+            # e.g. a Q/DQ INT8 detector with an FP16 TLR subnet (no calibration for the subnet)
+            subnet_inference_config.precision = config_dict["subnet_precision"].encode("utf-8")
         if "batch_size" in config_dict:
             batch_size = config_dict["batch_size"]
             subnet_inference_config.max_batch_size = batch_size
